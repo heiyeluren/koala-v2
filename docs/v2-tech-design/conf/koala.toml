@@ -1,0 +1,80 @@
+# Koala V2 服务配置示例
+
+# ============================================================
+# 服务器配置
+# ============================================================
+[server]
+listen = ":9981"
+read_timeout = "5s"
+write_timeout = "5s"
+shutdown_timeout = "30s"
+
+# ============================================================
+# 规则配置
+# ============================================================
+[rules]
+file = "conf/rules.toml"
+reload_interval = "30s"
+
+# ============================================================
+# 存储配置
+# ============================================================
+[storage]
+# 存储类型: redis | local
+type = "redis"
+
+# Redis 配置
+[storage.redis]
+addr = "127.0.0.1:6379"
+password = ""
+db = 0
+pool_size = 100
+min_idle_conns = 10
+dial_timeout = "5s"
+read_timeout = "3s"
+write_timeout = "3s"
+
+# 本地存储配置
+[storage.local]
+max_size = "1GB"
+num_counters = 10000000
+cleanup_interval = "1m"
+
+# 降级策略
+[storage.fallback]
+enabled = true
+health_check_interval = "5s"
+failure_threshold = 3
+recovery_interval = "30s"
+
+# ============================================================
+# 日志配置
+# ============================================================
+[logging]
+level = "info"
+format = "json"
+console = true
+
+[logging.file]
+enabled = true
+path = "logs/koala.log"
+max_size = 100
+max_backups = 10
+max_age = 30
+compress = true
+
+# ============================================================
+# 指标配置
+# ============================================================
+[metrics]
+enabled = true
+listen = ""
+path = "/metrics"
+
+# ============================================================
+# 性能调优
+# ============================================================
+[performance]
+max_concurrent = 0
+queue_size = 10000
+workers = 0

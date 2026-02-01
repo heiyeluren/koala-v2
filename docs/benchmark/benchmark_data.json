@@ -1,0 +1,102 @@
+{
+  "parameters": {
+    "concurrency": 500,
+    "duration": "30s",
+    "redis_addr": "127.0.0.1:6379"
+  },
+  "resources": [
+    {
+      "timestamp": "2026-02-01 22:30:26",
+      "cpu_usage_percent": 0,
+      "memory_used": "N/A",
+      "redis_memory_used": "1.30M",
+      "redis_keys": 0
+    },
+    {
+      "timestamp": "2026-02-01 22:30:56",
+      "cpu_usage_percent": 0,
+      "memory_used": "N/A",
+      "redis_memory_used": "1.65M",
+      "redis_keys": 0
+    },
+    {
+      "timestamp": "2026-02-01 22:31:00",
+      "cpu_usage_percent": 0,
+      "memory_used": "N/A",
+      "redis_memory_used": "1.65M",
+      "redis_keys": 0
+    },
+    {
+      "timestamp": "2026-02-01 22:31:30",
+      "cpu_usage_percent": 0,
+      "memory_used": "N/A",
+      "redis_memory_used": "32.00M",
+      "redis_keys": 0
+    },
+    {
+      "timestamp": "2026-02-01 22:31:33",
+      "cpu_usage_percent": 0,
+      "memory_used": "N/A",
+      "redis_memory_used": "1.65M",
+      "redis_keys": 0
+    },
+    {
+      "timestamp": "2026-02-01 22:32:03",
+      "cpu_usage_percent": 0,
+      "memory_used": "N/A",
+      "redis_memory_used": "32.00M",
+      "redis_keys": 0
+    }
+  ],
+  "results": [
+    {
+      "name": "纯读测试 (100% Browse)",
+      "duration": 30012931458,
+      "total_requests": 2049825,
+      "success_count": 2049825,
+      "error_count": 0,
+      "qps": 68298.06021676084,
+      "avg_latency": 7317997,
+      "p50_latency": 6707834,
+      "p95_latency": 12624583,
+      "p99_latency": 16645542,
+      "max_latency": 58231666
+    },
+    {
+      "name": "纯写测试 (100% Update)",
+      "duration": 30016622500,
+      "total_requests": 1523310,
+      "success_count": 1523310,
+      "error_count": 0,
+      "qps": 50748.880890913024,
+      "avg_latency": 9847670,
+      "p50_latency": 9187125,
+      "p95_latency": 14270917,
+      "p99_latency": 17039125,
+      "max_latency": 31468666
+    },
+    {
+      "name": "混合测试 (80% 读 / 20% 写)",
+      "duration": 30016158417,
+      "total_requests": 1936925,
+      "success_count": 1936925,
+      "error_count": 0,
+      "qps": 64529.410229358335,
+      "avg_latency": 7744605,
+      "p50_latency": 6547083,
+      "p95_latency": 13713541,
+      "p99_latency": 17673000,
+      "max_latency": 36237750
+    }
+  ],
+  "system_info": {
+    "os": "darwin",
+    "arch": "arm64",
+    "cpu_model": "Apple M4 Pro",
+    "cpu_cores": 12,
+    "total_memory": "24.0 GB",
+    "go_version": "go1.25.5",
+    "redis_version": "8.4.0",
+    "redis_max_memory": "33554432"
+  }
+}

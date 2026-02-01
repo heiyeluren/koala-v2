@@ -1,0 +1,5 @@
+# VIP用户白名单
+vip_user_001
+vip_user_002
+admin_user
+test_whitelist_user

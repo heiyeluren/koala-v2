@@ -1,0 +1,27 @@
+# Koala API 测试配置文件
+
+[server]
+listen = ":18080"
+read_timeout = "5s"
+write_timeout = "5s"
+shutdown_timeout = "10s"
+
+[rules]
+file = "rules.toml"
+reload_interval = "0s"
+
+[storage]
+type = "local"
+
+[storage.local]
+max_size = "64MB"
+num_counters = 10000
+
+[logging]
+level = "error"
+format = "console"
+console = true
+
+[metrics]
+enabled = true
+path = "/metrics"

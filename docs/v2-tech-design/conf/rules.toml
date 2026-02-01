@@ -1,0 +1,176 @@
+# Koala V2 规则配置示例
+
+# ============================================================
+# 元信息
+# ============================================================
+[meta]
+version = "1.0.0"
+description = "GIL 教育平台频率控制规则"
+
+# ============================================================
+# 字典定义
+# ============================================================
+[dicts]
+uid_whitelist = "conf/uid_whitelist.txt"
+uid_blacklist = "conf/uid_blacklist.txt"
+ip_whitelist = "conf/ip_whitelist.txt"
+ip_blacklist = "conf/ip_blacklist.txt"
+vip_users = "conf/vip_users.txt"
+
+# ============================================================
+# 结果模板
+# ============================================================
+[results]
+allow = { code = 0, message = "Allow" }
+deny = { code = 10, message = "Deny" }
+auth_slider = { code = 20, message = "Auth", auth_type = 1 }
+auth_sms = { code = 21, message = "Auth", auth_type = 3 }
+auth_captcha = { code = 22, message = "Auth", auth_type = 5 }
+
+# ============================================================
+# 访问控制规则（Phase 1）
+# ============================================================
+
+# 白名单
+[[access.whitelist]]
+name = "vip_users"
+match = { uid = "@vip_users" }
+result = "allow"
+desc = "VIP用户直接放行"
+
+[[access.whitelist]]
+name = "uid_whitelist"
+match = { uid = "@uid_whitelist" }
+result = "allow"
+desc = "白名单用户直接放行"
+
+[[access.whitelist]]
+name = "ip_whitelist"
+match = { ip = "@ip_whitelist" }
+result = "allow"
+desc = "白名单IP直接放行"
+
+# 黑名单
+[[access.blacklist]]
+name = "uid_blacklist"
+match = { uid = "@uid_blacklist" }
+result = "deny"
+desc = "黑名单用户直接拒绝"
+
+[[access.blacklist]]
+name = "ip_blacklist"
+match = { ip = "@ip_blacklist" }
+result = "deny"
+desc = "黑名单IP直接拒绝"
+
+# ============================================================
+# 业务规则（优先级 1）
+# ============================================================
+
+[[rules.business]]
+name = "ai_question_normal"
+type = "count"
+match = { act = "ai_question", uid = "+", vip = "!true" }
+limit = { time = "24h", count = 50 }
+result = "deny"
+desc = "普通用户每天AI问答50次"
+
+[[rules.business]]
+name = "ai_question_vip"
+type = "count"
+match = { act = "ai_question", uid = "+", vip = "true" }
+limit = { time = "24h", count = 200 }
+result = "deny"
+desc = "VIP用户每天AI问答200次"
+
+[[rules.business]]
+name = "comment_daily"
+type = "count"
+match = { act = "comment", uid = "+" }
+limit = { time = "24h", count = 20 }
+result = "deny"
+desc = "每天最多评论20次"
+
+[[rules.business]]
+name = "video_watch_rate"
+type = "count"
+match = { act = "video_start", uid = "+" }
+limit = { time = "1m", count = 10 }
+result = "deny"
+desc = "每分钟最多开始观看10个视频"
+
+# ============================================================
+# 发帖规则（优先级 2）
+# ============================================================
+
+[[rules.post]]
+name = "post_daily"
+type = "count"
+match = { act = "post", uid = "+" }
+limit = { time = "24h", count = 10 }
+result = "deny"
+desc = "每天最多发帖10次"
+
+[[rules.post]]
+name = "post_minute"
+type = "count"
+match = { act = "post", uid = "+" }
+limit = { time = "1m", count = 2 }
+result = "deny"
+desc = "每分钟最多发帖2次"
+
+[[rules.post]]
+name = "reply_minute"
+type = "count"
+match = { act = "reply", uid = "+" }
+limit = { time = "1m", count = 5 }
+result = "deny"
+desc = "每分钟最多回复5次"
+
+# ============================================================
+# 高级规则（优先级 3）
+# ============================================================
+
+[[rules.advanced]]
+name = "login_fail_protect"
+type = "count"
+match = { act = "login_fail", uid = "+" }
+limit = { time = "10m", count = 5 }
+result = "auth_slider"
+desc = "10分钟内登录失败5次需要滑块验证"
+
+[[rules.advanced]]
+name = "ask_base_control"
+type = "base"
+match = { act = "ask", ip = "+" }
+limit = { base = 20, time = "10s", count = 1 }
+result = "deny"
+desc = "同IP每天超过20次后，每10秒限1次"
+
+[[rules.advanced]]
+name = "api_leak_control"
+type = "leak"
+match = { act = "api_call", uid = "+" }
+limit = { time = "60s", count = 100 }
+result = "deny"
+desc = "API调用60秒内平滑限制100次"
+
+[[rules.advanced]]
+name = "search_leak_control"
+type = "leak"
+match = { act = "search", ip = "+" }
+limit = { time = "10s", count = 20 }
+result = "auth_captcha"
+desc = "搜索10秒内超过20次需要验证码"
+
+# ============================================================
+# 默认规则（优先级 4）
+# ============================================================
+
+[[rules.default]]
+name = "global_ip_rate"
+type = "count"
+match = { ip = "+" }
+limit = { time = "1s", count = 100 }
+result = "deny"
+desc = "单IP每秒最多100次请求"

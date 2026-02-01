@@ -1,0 +1,137 @@
+# Koala API 测试规则配置文件
+
+# 元数据
+[meta]
+version = "1.0.0"
+description = "API测试规则配置"
+
+# 字典定义
+[dicts]
+whitelist_users = "conf/whitelist_users.txt"
+blacklist_ips = "conf/blacklist_ips.txt"
+
+# 预定义结果模板
+[results]
+[results.allow]
+code = 0
+message = "ok"
+auth_type = 0
+
+[results.vip_allow]
+code = 0
+message = "VIP用户放行"
+auth_type = 0
+
+[results.internal_allow]
+code = 0
+message = "内网IP放行"
+auth_type = 0
+
+[results.ip_blocked]
+code = 4003
+message = "IP已被封禁"
+auth_type = 0
+
+[results.device_blocked]
+code = 4004
+message = "设备已被封禁"
+auth_type = 0
+
+[results.login_limit]
+code = 4001
+message = "登录过于频繁，请稍后重试"
+auth_type = 1
+
+[results.login_ip_limit]
+code = 4002
+message = "该IP登录过于频繁"
+auth_type = 2
+
+[results.post_limit]
+code = 4101
+message = "发帖数量已达上限"
+auth_type = 1
+
+[results.comment_limit]
+code = 4102
+message = "评论过于频繁"
+auth_type = 0
+
+[results.api_limit]
+code = 4201
+message = "API调用频率超限"
+auth_type = 0
+
+[results.global_limit]
+code = 4999
+message = "操作过于频繁"
+auth_type = 0
+
+# ========== 访问控制规则 ==========
+[access]
+
+[[access.whitelist]]
+name = "vip_user_whitelist"
+match = { uid = "@whitelist_users" }
+result = "vip_allow"
+
+[[access.whitelist]]
+name = "internal_ip_whitelist"
+match = { ip = "10.*.*.*" }
+result = "internal_allow"
+
+[[access.blacklist]]
+name = "blocked_ip_blacklist"
+match = { ip = "@blacklist_ips" }
+result = "ip_blocked"
+
+[[access.blacklist]]
+name = "blocked_device_blacklist"
+match = { did = "blocked_device_001" }
+result = "device_blocked"
+
+# ========== 限流规则 ==========
+[rules]
+
+[[rules.business]]
+name = "login_rate_limit"
+type = "count"
+match = { act = "login", uid = "+" }
+limit = { time = "60s", count = 5 }
+result = "login_limit"
+
+# 专门用于IP级别限流测试的规则（不含uid，只按IP计数）
+[[rules.business]]
+name = "login_ip_rate_limit"
+type = "count"
+match = { act = "login_ip_test", ip = "+" }
+limit = { time = "60s", count = 10 }
+result = "login_ip_limit"
+
+[[rules.post]]
+name = "post_user_limit"
+type = "count"
+match = { act = "post", uid = "+" }
+limit = { time = "3600s", count = 20 }
+result = "post_limit"
+
+[[rules.post]]
+name = "comment_limit"
+type = "count"
+match = { act = "comment", uid = "+" }
+limit = { time = "60s", count = 10 }
+result = "comment_limit"
+
+[[rules.advanced]]
+name = "api_global_limit"
+type = "freq"
+match = { act = "api_call" }
+limit = { time = "1s", count = 100 }
+result = "api_limit"
+
+[[rules.default]]
+name = "global_default_limit"
+type = "count"
+match = { act = "+", uid = "+" }
+limit = { time = "60s", count = 100 }
+result = "global_limit"

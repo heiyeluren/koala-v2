@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  koala:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    container_name: koala
+    ports:
+      - "9981:9981"
+    volumes:
+      - ../conf:/app/conf:ro
+      - koala_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    networks:
+      - koala_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: koala_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - koala_network
+
+volumes:
+  redis_data:
+  koala_logs:
+
+networks:
+  koala_network:
+    driver: bridge

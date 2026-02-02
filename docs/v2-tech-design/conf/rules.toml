@@ -141,23 +141,23 @@ desc = "10分钟内登录失败5次需要滑块验证"
 
 [[rules.advanced]]
 name = "ask_base_control"
-type = "base"
+type = "accumulate"
 match = { act = "ask", ip = "+" }
 limit = { base = 20, time = "10s", count = 1 }
 result = "deny"
 desc = "同IP每天超过20次后，每10秒限1次"
 
 [[rules.advanced]]
-name = "api_leak_control"
-type = "leak"
+name = "api_freq_control"
+type = "freq"
 match = { act = "api_call", uid = "+" }
 limit = { time = "60s", count = 100 }
 result = "deny"
 desc = "API调用60秒内平滑限制100次"
 
 [[rules.advanced]]
-name = "search_leak_control"
-type = "leak"
+name = "search_freq_control"
+type = "freq"
 match = { act = "search", ip = "+" }
 limit = { time = "10s", count = 20 }
 result = "auth_captcha"

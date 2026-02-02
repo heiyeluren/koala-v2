@@ -204,11 +204,11 @@
 
 #### TC-CF-014-LoadRules_AdvancedRules 🔴
 ```
-描述: 正确解析高级规则（Base 类型）
+描述: 正确解析高级规则（accumulate 类型）
 测试数据:
   [[rules.advanced]]
-  name = "base_control"
-  type = "base"
+  name = "accumulate_control"
+  type = "accumulate"
   match = { act = "ask", ip = "+" }
   limit = { base = 10, time = "5s", count = 1 }
   result = "deny"
@@ -221,20 +221,20 @@
   - limit.count = 1
 ```
 
-#### TC-CF-015-LoadRules_LeakRules 🔴
+#### TC-CF-015-LoadRules_FreqRules 🔴
 ```
-描述: 正确解析 Leak 类型规则
+描述: 正确解析 freq 类型规则
 测试数据:
   [[rules.advanced]]
-  name = "leak_control"
-  type = "leak"
+  name = "freq_control"
+  type = "freq"
   match = { act = "api_call", uid = "+" }
   limit = { time = "60s", count = 100 }
   result = "deny"
 测试步骤:
   1. 加载规则
 预期结果:
-  - type = "leak"
+  - type = "freq"
   - limit 正确解析
 ```
 

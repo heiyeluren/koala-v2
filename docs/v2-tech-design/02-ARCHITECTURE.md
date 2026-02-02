@@ -217,10 +217,10 @@ koala-v2/
 │   │   ├── evaluator.go            # 规则评估器
 │   │   └── algorithm/
 │   │       ├── interface.go        # 算法接口
-│   │       ├── direct.go           # Direct 算法
-│   │       ├── count.go            # Count 算法
-│   │       ├── base.go             # Base 算法
-│   │       └── leak.go             # Leak 算法
+│   │       ├── direct.go           # Direct 算法（访问控制）
+│   │       ├── count.go            # Count 算法（type="count"）
+│   │       ├── base.go             # Base 算法（type="accumulate"）
+│   │       └── leak.go             # Leak 算法（type="freq"）
 │   │
 │   ├── storage/
 │   │   ├── interface.go            # 存储接口定义
@@ -390,7 +390,7 @@ type RateRules struct {
 ```go
 type RateRule struct {
     Name       string                 // 规则名称
-    Type       string                 // 算法类型: direct/count/base/leak
+    Type       string                 // 算法类型: count/freq/accumulate
     Match      map[string]string      // 匹配条件
     Limit      LimitConfig            // 限制参数
     Result     string                 // 结果模板引用
@@ -400,9 +400,7 @@ type RateRule struct {
 type LimitConfig struct {
     Time   time.Duration            // 时间窗口
     Count  int64                    // 计数限制
-    Base   int64                    // 基础阈值（Base 算法）
-    Erase1 int64                    // 清理参数1（Leak 算法）
-    Erase2 int64                    // 清理参数2（Leak 算法）
+    Base   int64                    // 基础阈值（accumulate 算法）
 }
 ```
 

@@ -45,13 +45,13 @@
 
 ### 2.1 🔴 严重问题
 
-#### 问题 2.1.1: 算法类型名称不一致
+#### 问题 2.1.1: 算法类型名称不一致 ✅ 已修复
 
 | 来源 | 算法类型 |
 |------|----------|
-| 技术设计文档 | `direct`, `count`, `base`, `leak` |
+| ~~技术设计文档~~ | ~~`direct`, `count`, `base`, `leak`~~ |
 | 实际代码 | `count`, `freq`, `accumulate` |
-| 用户手册 | `count`, `freq` |
+| 修复后文档 | `count`, `freq`, `accumulate` |
 
 **代码位置**: `internal/config/rules.go:14-18`
 ```go
@@ -62,9 +62,7 @@ const (
 )
 ```
 
-**影响**: 技术设计文档中的算法类型名称与代码完全不匹配，会误导开发人员。
-
-**修复建议**: 更新技术设计文档 `docs/v2-tech-design/05-CONFIG-REFERENCE.md`，将算法类型改为实际支持的 `count`、`freq`、`accumulate`。
+**修复方案**: 已更新技术设计文档，将算法配置类型统一为 `count`、`freq`、`accumulate`。内部算法实现文件名保持 `direct.go`、`count.go`、`base.go`、`leak.go` 不变。
 
 ---
 

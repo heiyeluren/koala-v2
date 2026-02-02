@@ -322,7 +322,7 @@ result = "device_blocked"
 # 登录频率限制（按用户）
 [[rules.business]]
 name = "login_rate_limit"
-type = "count"                          # count=计数器, freq=漏桶
+type = "count"                          # count=固定窗口, freq=滑动窗口, accumulate=累积阈值
 match = { act = "login", uid = "+" }    # +表示任意非空值
 limit = { time = "60s", count = 5 }     # 60秒内最多5次
 result = "login_limit"

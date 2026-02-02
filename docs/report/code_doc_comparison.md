@@ -18,28 +18,23 @@ const (
 )
 ```
 
-### 技术设计文档 (`docs/v2-tech-design/05-CONFIG-REFERENCE.md:476`)
+### 技术设计文档 (`docs/v2-tech-design/05-CONFIG-REFERENCE.md`) ✅ 已修复
 
 ```
-| type | string | 是 | 算法类型: direct/count/base/leak |
+| type | string | 是 | 算法类型: count/freq/accumulate |
 ```
 
 ### 对比表
 
 | 文档值 | 代码值 | 状态 | 说明 |
 |--------|--------|------|------|
-| `direct` | - | ❌ 不存在 | 文档有，代码无 |
 | `count` | `count` | ✅ 一致 | 固定窗口计数 |
-| `base` | `accumulate` | ❌ 名称不同 | 功能相同但名称不一致 |
-| `leak` | `freq` | ❌ 名称不同 | 功能相同但名称不一致 |
+| `freq` | `freq` | ✅ 一致 | 滑动窗口/漏桶 |
+| `accumulate` | `accumulate` | ✅ 一致 | 累积阈值+二级限流 |
 
-### 修复建议
+### 修复记录
 
-更新 `docs/v2-tech-design/05-CONFIG-REFERENCE.md:476`:
-```
-- | type | string | 是 | 算法类型: direct/count/base/leak |
-+ | type | string | 是 | 算法类型: count/freq/accumulate |
-```
+已更新 `docs/v2-tech-design/05-CONFIG-REFERENCE.md`，算法类型统一为 `count/freq/accumulate`。
 
 ---
 

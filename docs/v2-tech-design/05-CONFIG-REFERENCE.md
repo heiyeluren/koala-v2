@@ -375,7 +375,7 @@ result = "deny"
 desc = "同IP每天超过20次后，每10秒限1次"
 
 [[rules.advanced]]
-name = "api_leak_control"
+name = "api_freq_control"
 type = "freq"
 match = { act = "api_call", uid = "+" }
 limit = { time = "60s", count = 100 }
@@ -383,7 +383,7 @@ result = "deny"
 desc = "API调用60秒内平滑限制100次"
 
 [[rules.advanced]]
-name = "search_leak_control"
+name = "search_freq_control"
 type = "freq"
 match = { act = "search", ip = "+" }
 limit = { time = "10s", count = 20 }

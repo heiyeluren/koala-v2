@@ -65,7 +65,7 @@ nohup ./koala -config conf/koala.toml > logs/koala.log 2>&1 &
 
 ```bash
 # 健康检查
-curl http://localhost:18080/health
+curl http://localhost:9981/health
 
 # 预期输出
 {"status":"ok","timestamp":"2026-02-01T12:00:00Z"}
@@ -97,7 +97,7 @@ kill -15 <PID>
 # 服务器配置
 # =============================================================================
 [server]
-listen = ":18080"              # 监听地址和端口
+listen = ":9981"              # 监听地址和端口
 read_timeout = "5s"            # 读取超时
 write_timeout = "5s"           # 写入超时
 shutdown_timeout = "10s"       # 优雅关闭超时
@@ -467,7 +467,7 @@ test_whitelist_user
 #### 5.4.1 健康检查
 
 ```bash
-curl http://localhost:18080/health
+curl http://localhost:9981/health
 ```
 
 **成功响应:**
@@ -481,7 +481,7 @@ curl http://localhost:18080/health
 #### 5.4.2 就绪检查
 
 ```bash
-curl http://localhost:18080/ready
+curl http://localhost:9981/ready
 ```
 
 **成功响应:**
@@ -499,7 +499,7 @@ curl http://localhost:18080/ready
 ##### 场景1: 正常请求（允许通过）
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{
     "act": "login",
@@ -520,7 +520,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 场景2: VIP用户（白名单放行）
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{
     "act": "login",
@@ -541,7 +541,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 场景3: 内网IP（白名单放行）
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{
     "act": "login",
@@ -563,7 +563,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 场景4: 封禁IP（黑名单拦截）
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{
     "act": "login",
@@ -585,7 +585,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 场景5: 封禁设备（黑名单拦截）
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{
     "act": "login",
@@ -609,7 +609,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ```bash
 # 连续请求6次触发限流（限制5次/分钟）
 for i in {1..6}; do
-  curl -X POST http://localhost:18080/api/v1/browse \
+  curl -X POST http://localhost:9981/api/v1/browse \
     -H "Content-Type: application/json" \
     -d '{"act":"login","uid":"test_user","update":true}'
   echo ""
@@ -635,7 +635,7 @@ done
 ##### 场景7: 带扩展字段
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{
     "act": "purchase",
@@ -666,7 +666,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 场景1: 正常更新
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/update \
+curl -X POST http://localhost:9981/api/v1/update \
   -H "Content-Type: application/json" \
   -d '{
     "act": "login",
@@ -688,7 +688,7 @@ curl -X POST http://localhost:18080/api/v1/update \
 ```bash
 # 模拟用户连续操作
 for i in {1..10}; do
-  curl -s -X POST http://localhost:18080/api/v1/update \
+  curl -s -X POST http://localhost:9981/api/v1/update \
     -H "Content-Type: application/json" \
     -d "{\"act\":\"comment\",\"uid\":\"user_$i\"}"
 done
@@ -701,7 +701,7 @@ done
 ##### 场景1: 批量检查多个用户
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/batch \
+curl -X POST http://localhost:9981/api/v1/batch \
   -H "Content-Type: application/json" \
   -d '{
     "requests": [
@@ -728,7 +728,7 @@ curl -X POST http://localhost:18080/api/v1/batch \
 ##### 场景2: 批量检查多种行为
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/batch \
+curl -X POST http://localhost:9981/api/v1/batch \
   -H "Content-Type: application/json" \
   -d '{
     "requests": [
@@ -757,7 +757,7 @@ curl -X POST http://localhost:18080/api/v1/batch \
 ##### 错误1: 缺少必填字段 act
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{"uid": "user123"}'
 ```
@@ -774,7 +774,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 错误2: 无效的JSON格式
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d 'invalid json'
 ```
@@ -791,7 +791,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ##### 错误3: 错误的HTTP方法
 
 ```bash
-curl http://localhost:18080/api/v1/browse
+curl http://localhost:9981/api/v1/browse
 ```
 
 **响应 (HTTP 405):**
@@ -807,7 +807,7 @@ curl http://localhost:18080/api/v1/browse
 
 ```bash
 # 生成超过100条的请求
-curl -X POST http://localhost:18080/api/v1/batch \
+curl -X POST http://localhost:9981/api/v1/batch \
   -H "Content-Type: application/json" \
   -d '{"requests": [... 超过100条 ...]}'
 ```
@@ -860,7 +860,7 @@ grep "2026-02-01T12:" logs/koala.log
 **检查步骤:**
 ```bash
 # 1. 检查端口是否被占用
-lsof -i :18080
+lsof -i :9981
 
 # 2. 检查配置文件是否存在
 ls -la conf/koala.toml
@@ -924,7 +924,7 @@ redis-cli FLUSHALL
 
 ```bash
 # 查看Prometheus指标
-curl http://localhost:18080/metrics
+curl http://localhost:9981/metrics
 
 # 关键指标说明
 # koala_requests_total - 总请求数

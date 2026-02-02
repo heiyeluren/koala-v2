@@ -16,25 +16,25 @@ pkill -f koala
 ## 健康检查
 
 ```bash
-curl http://localhost:18080/health
-curl http://localhost:18080/ready
+curl http://localhost:9981/health
+curl http://localhost:9981/ready
 ```
 
 ## Browse - 检查是否允许
 
 ```bash
 # 基本请求
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{"act":"login","uid":"user123"}'
 
 # 带IP和设备ID
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{"act":"login","uid":"user123","ip":"192.168.1.1","did":"device001"}'
 
 # 检查并更新计数器
-curl -X POST http://localhost:18080/api/v1/browse \
+curl -X POST http://localhost:9981/api/v1/browse \
   -H "Content-Type: application/json" \
   -d '{"act":"login","uid":"user123","update":true}'
 ```
@@ -42,7 +42,7 @@ curl -X POST http://localhost:18080/api/v1/browse \
 ## Update - 更新计数器
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/update \
+curl -X POST http://localhost:9981/api/v1/update \
   -H "Content-Type: application/json" \
   -d '{"act":"login","uid":"user123"}'
 ```
@@ -50,7 +50,7 @@ curl -X POST http://localhost:18080/api/v1/update \
 ## Batch - 批量检查
 
 ```bash
-curl -X POST http://localhost:18080/api/v1/batch \
+curl -X POST http://localhost:9981/api/v1/batch \
   -H "Content-Type: application/json" \
   -d '{
     "requests": [

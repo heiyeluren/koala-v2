@@ -10,6 +10,7 @@ package algorithm
 
 import (
 	"context"
+	"time"
 
 	"koala/internal/storage"
 )
@@ -52,9 +53,9 @@ func (b *Base) Browse(ctx context.Context, key string, limit LimitConfig, store 
 
 // Update 递增总计数器和二级计数器。
 func (b *Base) Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
-	// 递增总计数（无TTL）
+	// 递增总计数（带TTL，防止永不过期导致内存泄漏）
 	totalKey := key + ":total"
-	total, err := store.Incr(ctx, totalKey)
+	total, err := store.IncrWithTTL(ctx, totalKey, clampTTL(limit.Time))
 	if err != nil {
 		return err
 	}
@@ -69,6 +70,21 @@ func (b *Base) Update(ctx context.Context, key string, limit LimitConfig, store 
 	}
 
 	return nil
+}
+
+// clampTTL 计算 totalKey 的 TTL。
+// TTL = clamp(limit.Time * 10, 1小时, 7天)
+func clampTTL(windowTime time.Duration) time.Duration {
+	ttl := windowTime * 10
+	const minTTL = time.Hour
+	const maxTTL = 7 * 24 * time.Hour
+	if ttl < minTTL {
+		ttl = minTTL
+	}
+	if ttl > maxTTL {
+		ttl = maxTTL
+	}
+	return ttl
 }
 
 // Name 返回算法名称。

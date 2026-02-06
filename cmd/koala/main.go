@@ -26,6 +26,7 @@ import (
 	"koala/internal/storage/local"
 	"koala/internal/storage/manager"
 	"koala/internal/storage/redis"
+	"koala/pkg/logger"
 )
 
 var (
@@ -77,6 +78,9 @@ func main() {
 		dictManager = config.NewDictManager()
 	}
 
+	// 将字典同步到 matcher 的 DictMatcher
+	engine.SyncDictsToMatcher(dictManager)
+
 	// 创建规则引擎
 	eng := engine.New(
 		engine.WithStorage(store),
@@ -116,19 +120,28 @@ func main() {
 
 	// 启动服务器
 	go func() {
-		log.Printf("Koala 服务启动，监听地址: %s", cfg.Server.Listen)
+		logger.Info("Koala 服务启动", "addr", cfg.Server.Listen)
 		if err := server.Run(); err != nil {
 			log.Fatalf("服务器启动失败: %v", err)
 		}
 	}()
 
-	// 等待退出信号
+	// 等待中断信号
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("正在关闭服务器...")
-	log.Println("服务器已关闭")
+	logger.Info("正在关闭服务器...")
+
+	// 使用配置的超时时间优雅关闭
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Error("服务器关闭错误", "error", err)
+	}
+
+	logger.Info("服务器已关闭")
 }
 
 // EngineAdapter 将 engine.Engine 适配为 api.Engine 接口。
@@ -262,6 +275,12 @@ func startConfigWatcher(cfg *config.Config, eng *engine.Engine, dictManager *con
 			}
 
 			log.Printf("规则热重载成功")
+		}
+
+		// 如果是字典变更，将字典同步到 matcher
+		if event.Type == config.ConfigChangeTypeDict {
+			engine.SyncDictsToMatcher(dictManager)
+			log.Printf("字典同步到 matcher 成功")
 		}
 	})
 	if err != nil {

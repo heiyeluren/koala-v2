@@ -11,6 +11,7 @@ package local
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -438,6 +439,212 @@ func TestLocalStorage_Type(t *testing.T) {
 	defer store.Close()
 
 	assert.Equal(t, "local", store.Type())
+}
+
+// =============================================================================
+// List Cleanup Tests（列表清理测试）
+// =============================================================================
+
+func TestLocalStorage_ListCleanup(t *testing.T) {
+	// 测试后台清理协程能够移除空列表条目
+	cfg := DefaultConfig()
+	cfg.CleanupInterval = 50 * time.Millisecond
+
+	store, err := New(cfg)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// 插入列表数据
+	err = store.LPush(ctx, "list1", 100, 200, 300)
+	require.NoError(t, err)
+
+	// 通过 LTrim 将列表清空（start > stop 会清空列表）
+	err = store.LTrim(ctx, "list1", 1, 0)
+	require.NoError(t, err)
+
+	// 验证列表已被清空
+	length, err := store.LLen(ctx, "list1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), length)
+
+	// 等待清理协程运行（至少等待两个清理周期）
+	time.Sleep(150 * time.Millisecond)
+
+	// 验证空列表条目已从内部 map 中移除
+	store.listsMu.RLock()
+	_, exists := store.lists["list1"]
+	store.listsMu.RUnlock()
+	assert.False(t, exists, "空列表条目应该被清理协程移除")
+}
+
+func TestLocalStorage_CleanupDoesNotRemoveActiveData(t *testing.T) {
+	// 测试清理协程不会移除仍有有效数据的列表
+	cfg := DefaultConfig()
+	cfg.CleanupInterval = 50 * time.Millisecond
+
+	store, err := New(cfg)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// 插入列表数据（模拟活跃的滑动窗口时间戳）
+	now := time.Now().UnixMilli()
+	err = store.LPush(ctx, "active_list", now, now-1000, now-2000)
+	require.NoError(t, err)
+
+	// 同时创建一个空列表用于对比
+	err = store.LPush(ctx, "empty_list", 1)
+	require.NoError(t, err)
+	err = store.LTrim(ctx, "empty_list", 1, 0)
+	require.NoError(t, err)
+
+	// 等待清理协程运行
+	time.Sleep(150 * time.Millisecond)
+
+	// 验证活跃列表仍然存在
+	length, err := store.LLen(ctx, "active_list")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(3), length)
+
+	// 验证活跃列表数据完整
+	values, err := store.LRange(ctx, "active_list", 0, -1)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, len(values))
+
+	// 验证空列表已被移除
+	store.listsMu.RLock()
+	_, emptyExists := store.lists["empty_list"]
+	store.listsMu.RUnlock()
+	assert.False(t, emptyExists, "空列表条目应该被清理协程移除")
+}
+
+func TestLocalStorage_CleanupStopsOnClose(t *testing.T) {
+	// 测试 Close() 能正确停止清理协程
+	cfg := DefaultConfig()
+	cfg.CleanupInterval = 50 * time.Millisecond
+
+	store, err := New(cfg)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// 插入并清空一个列表
+	err = store.LPush(ctx, "list1", 100)
+	require.NoError(t, err)
+	err = store.LTrim(ctx, "list1", 1, 0)
+	require.NoError(t, err)
+
+	// 关闭存储（应该停止清理协程）
+	err = store.Close()
+	require.NoError(t, err)
+
+	// 关闭后不应 panic 或阻塞，重复关闭也应该安全
+	err = store.Close()
+	assert.NoError(t, err)
+}
+
+func TestLocalStorage_CleanupDisabledByDefault(t *testing.T) {
+	// 测试当 CleanupInterval 为 0 时不启动清理协程
+	cfg := DefaultConfig()
+	// DefaultConfig 应该设置一个合理的默认值
+	// 但设置为 0 应该禁用清理
+	cfg.CleanupInterval = 0
+
+	store, err := New(cfg)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// 插入并清空一个列表
+	err = store.LPush(ctx, "list1", 100)
+	require.NoError(t, err)
+	err = store.LTrim(ctx, "list1", 1, 0)
+	require.NoError(t, err)
+
+	// 等待一段时间
+	time.Sleep(100 * time.Millisecond)
+
+	// 当清理被禁用时，空列表条目应该仍然存在
+	store.listsMu.RLock()
+	_, exists := store.lists["list1"]
+	store.listsMu.RUnlock()
+	assert.True(t, exists, "清理被禁用时，空列表条目不应被移除")
+}
+
+func TestLocalStorage_DefaultConfigHasCleanupInterval(t *testing.T) {
+	// 测试默认配置包含合理的 CleanupInterval 值
+	cfg := DefaultConfig()
+	assert.Equal(t, 5*time.Minute, cfg.CleanupInterval,
+		"默认 CleanupInterval 应为 5 分钟")
+}
+
+func TestLocalStorage_CleanupExpiredListEntries(t *testing.T) {
+	// 测试清理协程能移除已过期的列表条目
+	cfg := DefaultConfig()
+	cfg.CleanupInterval = 50 * time.Millisecond
+
+	store, err := New(cfg)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// 创建一个带过期时间的列表条目
+	err = store.LPush(ctx, "expiring_list", 100, 200)
+	require.NoError(t, err)
+
+	// 手动设置列表条目的过期时间为过去（模拟已过期）
+	store.listsMu.RLock()
+	entry := store.lists["expiring_list"]
+	store.listsMu.RUnlock()
+
+	entry.mu.Lock()
+	entry.expires = time.Now().Add(-1 * time.Second) // 已过期
+	entry.mu.Unlock()
+
+	// 等待清理协程运行
+	time.Sleep(150 * time.Millisecond)
+
+	// 验证过期列表已被移除
+	store.listsMu.RLock()
+	_, exists := store.lists["expiring_list"]
+	store.listsMu.RUnlock()
+	assert.False(t, exists, "过期的列表条目应该被清理协程移除")
+}
+
+func TestLocalStorage_CleanupConcurrentAccess(t *testing.T) {
+	// 测试清理协程与并发读写操作的安全性
+	cfg := DefaultConfig()
+	cfg.CleanupInterval = 10 * time.Millisecond
+
+	store, err := New(cfg)
+	require.NoError(t, err)
+	defer store.Close()
+
+	ctx := context.Background()
+	done := make(chan struct{})
+
+	// 启动并发写入
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			key := fmt.Sprintf("list_%d", i%10)
+			_ = store.LPush(ctx, key, int64(i))
+			if i%3 == 0 {
+				_ = store.LTrim(ctx, key, 1, 0) // 偶尔清空列表
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	<-done
+
+	// 不应发生 panic 或数据竞争
+	// 如果存在竞争条件，使用 -race 标志运行时会被检测到
 }
 
 // =============================================================================

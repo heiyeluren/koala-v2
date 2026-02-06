@@ -11,9 +11,12 @@ package api
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"koala/pkg/logger"
 )
 
 // Handler 处理所有HTTP请求。
@@ -34,10 +37,11 @@ func NewHandler(engine Engine) *Handler {
 func (h *Handler) Browse(c *gin.Context) {
 	var req APIRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.Error("Browse请求参数绑定失败", "error", err)
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Allowed: false,
 			Code:    -1,
-			Message: "请求参数错误: " + err.Error(),
+			Message: "请求参数错误",
 		})
 		return
 	}
@@ -55,10 +59,11 @@ func (h *Handler) Browse(c *gin.Context) {
 	// 调用引擎进行检查
 	resp, err := h.engine.Browse(c.Request.Context(), engineReq)
 	if err != nil {
+		logger.Error("Browse引擎处理失败", "error", err, "act", req.Act, "uid", req.UID)
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Allowed: false,
 			Code:    -2,
-			Message: "内部错误: " + err.Error(),
+			Message: "服务器内部错误",
 		})
 		return
 	}
@@ -79,10 +84,11 @@ func (h *Handler) Browse(c *gin.Context) {
 func (h *Handler) Update(c *gin.Context) {
 	var req APIRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.Error("Update请求参数绑定失败", "error", err)
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Allowed: false,
 			Code:    -1,
-			Message: "请求参数错误: " + err.Error(),
+			Message: "请求参数错误",
 		})
 		return
 	}
@@ -99,10 +105,11 @@ func (h *Handler) Update(c *gin.Context) {
 	// 调用引擎更新计数器
 	err := h.engine.Update(c.Request.Context(), engineReq)
 	if err != nil {
+		logger.Error("Update引擎处理失败", "error", err, "act", req.Act, "uid", req.UID)
 		c.JSON(http.StatusInternalServerError, APIResponse{
 			Allowed: false,
 			Code:    -2,
-			Message: "更新失败: " + err.Error(),
+			Message: "服务器内部错误",
 		})
 		return
 	}
@@ -121,10 +128,11 @@ func (h *Handler) Update(c *gin.Context) {
 func (h *Handler) Batch(c *gin.Context) {
 	var req BatchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.Error("Batch请求参数绑定失败", "error", err)
 		c.JSON(http.StatusBadRequest, APIResponse{
 			Allowed: false,
 			Code:    -1,
-			Message: "请求参数错误: " + err.Error(),
+			Message: "请求参数错误",
 		})
 		return
 	}
@@ -147,10 +155,11 @@ func (h *Handler) Batch(c *gin.Context) {
 		return
 	}
 
-	// 处理每个请求
+	// 并行处理每个请求
 	results := make([]BatchResult, len(req.Requests))
+	var wg sync.WaitGroup
 	for i, item := range req.Requests {
-		// 验证请求项
+		// 验证请求项（在主协程中完成，避免竞态）
 		if item.ID == "" || item.Act == "" {
 			results[i] = BatchResult{
 				ID:      item.ID,
@@ -161,36 +170,41 @@ func (h *Handler) Batch(c *gin.Context) {
 			continue
 		}
 
-		// 构造引擎请求
-		engineReq := &EngineRequest{
-			Act: item.Act,
-			UID: item.UID,
-			IP:  item.IP,
-			DID: item.DID,
-			Ext: item.Ext,
-		}
+		wg.Add(1)
+		go func(idx int, batchItem BatchItem) {
+			defer wg.Done()
 
-		// 调用引擎进行检查
-		resp, err := h.engine.Browse(c.Request.Context(), engineReq)
-		if err != nil {
-			results[i] = BatchResult{
-				ID:      item.ID,
-				Allowed: false,
-				Code:    -2,
-				Message: "内部错误: " + err.Error(),
+			engineReq := &EngineRequest{
+				Act: batchItem.Act,
+				UID: batchItem.UID,
+				IP:  batchItem.IP,
+				DID: batchItem.DID,
+				Ext: batchItem.Ext,
 			}
-			continue
-		}
 
-		results[i] = BatchResult{
-			ID:       item.ID,
-			Allowed:  resp.Allowed,
-			Code:     resp.Code,
-			Message:  resp.Message,
-			RuleName: resp.RuleName,
-			AuthType: resp.AuthType,
-		}
+			resp, err := h.engine.Browse(c.Request.Context(), engineReq)
+			if err != nil {
+				logger.Error("Batch引擎处理失败", "error", err, "act", batchItem.Act, "uid", batchItem.UID, "item_id", batchItem.ID)
+				results[idx] = BatchResult{
+					ID:      batchItem.ID,
+					Allowed: false,
+					Code:    -2,
+					Message: "服务器内部错误",
+				}
+				return
+			}
+
+			results[idx] = BatchResult{
+				ID:       batchItem.ID,
+				Allowed:  resp.Allowed,
+				Code:     resp.Code,
+				Message:  resp.Message,
+				RuleName: resp.RuleName,
+				AuthType: resp.AuthType,
+			}
+		}(i, item)
 	}
+	wg.Wait()
 
 	c.JSON(http.StatusOK, BatchResponse{
 		Results: results,

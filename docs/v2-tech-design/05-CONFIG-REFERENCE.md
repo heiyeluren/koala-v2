@@ -19,7 +19,7 @@
 # 服务器配置
 # ============================================================
 [server]
-# 监听地址
+# 监听地址（必填，无默认值）
 listen = ":9981"
 
 # 读取超时
@@ -29,7 +29,7 @@ read_timeout = "5s"
 write_timeout = "5s"
 
 # 优雅关闭超时
-shutdown_timeout = "30s"
+shutdown_timeout = "10s"
 
 # ============================================================
 # 规则配置
@@ -38,51 +38,41 @@ shutdown_timeout = "30s"
 # 规则配置文件路径
 file = "conf/rules.toml"
 
-# 热重载检查间隔
+# 热重载检查间隔（当前仅用于配置记录，实际热重载通过 fsnotify 事件驱动）
 reload_interval = "30s"
 
 # ============================================================
 # 存储配置
 # ============================================================
 [storage]
-# 存储类型: redis | local
-type = "redis"
+# 存储类型: local | redis（默认 "local"）
+type = "local"
 
-# Redis 配置
+# Redis 配置（仅当 type = "redis" 时生效）
 [storage.redis]
 addr = "127.0.0.1:6379"
 password = ""
 db = 0
 pool_size = 100
-min_idle_conns = 10
 dial_timeout = "5s"
 read_timeout = "3s"
 write_timeout = "3s"
 
 # 本地存储配置（用于纯本地模式或降级）
 [storage.local]
-# 最大内存（支持单位: KB, MB, GB）
-max_size = "1GB"
+# 最大内存（支持单位: KB, MB, GB；未设置时默认 512MB）
+max_size = "64MB"
 
-# Ristretto 计数器数量（推荐为预期 key 数量的 10 倍）
-num_counters = 10000000
+# Ristretto 计数器数量（推荐为预期 key 数量的 10 倍；未设置时为 Go int 零值 0）
+num_counters = 10000
 
-# 清理间隔
-cleanup_interval = "1m"
+# 清理间隔（未设置时为 Go Duration 零值 0，即不主动清理）
+# cleanup_interval = "1m"
 
 # 降级策略配置
 [storage.fallback]
 # 是否启用降级
 enabled = true
-
-# 健康检查间隔
-health_check_interval = "5s"
-
-# 连续失败次数阈值（达到后切换到本地存储）
-failure_threshold = 3
-
-# 恢复检查间隔（切换到本地后，多久尝试恢复）
-recovery_interval = "30s"
 
 # ============================================================
 # 日志配置
@@ -91,7 +81,7 @@ recovery_interval = "30s"
 # 日志级别: debug | info | warn | error
 level = "info"
 
-# 日志格式: json | console
+# 日志格式: console | json（默认 "console"）
 format = "json"
 
 # 是否输出到控制台
@@ -124,24 +114,8 @@ compress = true
 # 是否启用 Prometheus 指标
 enabled = true
 
-# 指标监听地址（留空则复用主服务端口）
-listen = ""
-
 # 指标路径
 path = "/metrics"
-
-# ============================================================
-# 性能调优
-# ============================================================
-[performance]
-# 最大并发数（0 = 不限制）
-max_concurrent = 0
-
-# 请求队列大小
-queue_size = 10000
-
-# 工作协程数（0 = 自动）
-workers = 0
 ```
 
 ### 5.2.2 配置字段详解
@@ -150,54 +124,75 @@ workers = 0
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| listen | string | ":9981" | 监听地址 |
+| listen | string | **必填，无默认值** | 监听地址，validateConfig 检查非空 |
 | read_timeout | duration | "5s" | 读取超时 |
 | write_timeout | duration | "5s" | 写入超时 |
 | shutdown_timeout | duration | "30s" | 优雅关闭超时 |
+
+#### [rules] 规则配置引用
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| file | string | - | 规则配置文件路径 |
+| reload_interval | duration | "30s" | 热重载检查间隔（当前仅用于配置记录，实际通过 fsnotify 事件驱动） |
 
 #### [storage] 存储配置
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| type | string | "redis" | 存储类型 |
+| type | string | "local" | 存储类型（local 或 redis） |
 
 #### [storage.redis] Redis 配置
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| addr | string | "127.0.0.1:6379" | Redis 地址 |
+| addr | string | - | Redis 地址 |
 | password | string | "" | 密码 |
 | db | int | 0 | 数据库编号 |
-| pool_size | int | 100 | 连接池大小 |
-| min_idle_conns | int | 10 | 最小空闲连接 |
-| dial_timeout | duration | "5s" | 连接超时 |
-| read_timeout | duration | "3s" | 读取超时 |
-| write_timeout | duration | "3s" | 写入超时 |
+| pool_size | int | 0 | 连接池大小 |
+| dial_timeout | duration | 0 | 连接超时 |
+| read_timeout | duration | 0 | 读取超时 |
+| write_timeout | duration | 0 | 写入超时 |
 
 #### [storage.local] 本地存储配置
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| max_size | string | "1GB" | 最大内存 |
-| num_counters | int | 10000000 | 计数器数量 |
-| cleanup_interval | duration | "1m" | 清理间隔 |
+| max_size | string | 未设置时等效 "512MB" | 最大内存（GetMaxSizeBytes 在空值时返回 512MB） |
+| num_counters | int | 0（Go 零值，未由 applyDefaults 设置） | 计数器数量（推荐为预期 key 数量的 10 倍） |
+| cleanup_interval | duration | 0（Go 零值，未由 applyDefaults 设置） | 清理间隔 |
 
 #### [storage.fallback] 降级配置
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| enabled | bool | true | 是否启用降级 |
-| health_check_interval | duration | "5s" | 健康检查间隔 |
-| failure_threshold | int | 3 | 失败阈值 |
-| recovery_interval | duration | "30s" | 恢复检查间隔 |
+| enabled | bool | false | 是否启用降级 |
 
 #### [logging] 日志配置
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | level | string | "info" | 日志级别 |
-| format | string | "json" | 日志格式 |
-| console | bool | true | 是否输出到控制台 |
+| format | string | "console" | 日志格式（console 或 json） |
+| console | bool | false | 是否输出到控制台 |
+
+#### [logging.file] 文件日志配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| enabled | bool | false | 是否启用文件日志 |
+| path | string | "" | 日志文件路径 |
+| max_size | int | 0 | 单个文件最大大小（MB） |
+| max_backups | int | 0 | 保留的旧文件数量 |
+| max_age | int | 0 | 保留天数 |
+| compress | bool | false | 是否压缩旧文件 |
+
+#### [metrics] 指标配置
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| enabled | bool | false | 是否启用 Prometheus 指标 |
+| path | string | "/metrics" | 指标暴露路径 |
 
 ## 5.3 规则配置 (rules.toml)
 
@@ -236,23 +231,34 @@ ip_blacklist = "conf/ip_blacklist.txt"
 vip_users = "conf/vip_users.txt"
 
 # ============================================================
-# 结果模板
+# 结果模板（支持 inline table 或 section table 两种写法）
 # ============================================================
-[results]
-# 默认允许
-allow = { code = 0, message = "Allow" }
 
-# 拒绝
-deny = { code = 10, message = "Deny" }
+# 写法一：section table（推荐，便于添加注释）
+[results.allow]
+code = 0
+message = "ok"
+auth_type = 0
 
-# 需要滑块验证
-auth_slider = { code = 20, message = "Auth", auth_type = 1 }
+[results.deny]
+code = 10
+message = "操作过于频繁"
+auth_type = 0
 
-# 需要短信验证
-auth_sms = { code = 21, message = "Auth", auth_type = 3 }
+[results.auth_slider]
+code = 20
+message = "需要滑块验证"
+auth_type = 1
 
-# 需要图形验证码
-auth_captcha = { code = 22, message = "Auth", auth_type = 5 }
+[results.auth_sms]
+code = 21
+message = "需要短信验证"
+auth_type = 3
+
+[results.auth_captcha]
+code = 22
+message = "需要图形验证码"
+auth_type = 5
 
 # ============================================================
 # 访问控制规则（Phase 1: 最先执行）
@@ -263,32 +269,27 @@ auth_captcha = { code = 22, message = "Auth", auth_type = 5 }
 name = "vip_users"
 match = { uid = "@vip_users" }
 result = "allow"
-desc = "VIP用户直接放行"
 
 [[access.whitelist]]
 name = "uid_whitelist"
 match = { uid = "@uid_whitelist" }
 result = "allow"
-desc = "白名单用户直接放行"
 
 [[access.whitelist]]
 name = "ip_whitelist"
 match = { ip = "@ip_whitelist" }
 result = "allow"
-desc = "白名单IP直接放行"
 
 # 黑名单规则（命中则立即拒绝）
 [[access.blacklist]]
 name = "uid_blacklist"
 match = { uid = "@uid_blacklist" }
 result = "deny"
-desc = "黑名单用户直接拒绝"
 
 [[access.blacklist]]
 name = "ip_blacklist"
 match = { ip = "@ip_blacklist" }
 result = "deny"
-desc = "黑名单IP直接拒绝"
 
 # ============================================================
 # 业务规则（Phase 2: 优先级 1）
@@ -300,7 +301,7 @@ type = "count"
 match = { act = "ai_question", uid = "+", vip = "!true" }
 limit = { time = "24h", count = 50 }
 result = "deny"
-desc = "普通用户每天AI问答50次"
+desc = "普通用户每24小时AI问答50次"
 
 [[rules.business]]
 name = "ai_question_vip"
@@ -308,7 +309,7 @@ type = "count"
 match = { act = "ai_question", uid = "+", vip = "true" }
 limit = { time = "24h", count = 200 }
 result = "deny"
-desc = "VIP用户每天AI问答200次"
+desc = "VIP用户每24小时AI问答200次"
 
 [[rules.business]]
 name = "comment_daily"
@@ -316,7 +317,7 @@ type = "count"
 match = { act = "comment", uid = "+" }
 limit = { time = "24h", count = 20 }
 result = "deny"
-desc = "每天最多评论20次"
+desc = "每24小时最多评论20次"
 
 [[rules.business]]
 name = "video_watch_rate"
@@ -336,7 +337,7 @@ type = "count"
 match = { act = "post", uid = "+" }
 limit = { time = "24h", count = 10 }
 result = "deny"
-desc = "每天最多发帖10次"
+desc = "每24小时最多发帖10次"
 
 [[rules.post]]
 name = "post_minute"
@@ -372,7 +373,7 @@ type = "accumulate"
 match = { act = "ask", ip = "+" }
 limit = { base = 20, time = "10s", count = 1 }
 result = "deny"
-desc = "同IP每天超过20次后，每10秒限1次"
+desc = "同IP超过20次后，每10秒限1次"
 
 [[rules.advanced]]
 name = "api_freq_control"
@@ -427,6 +428,24 @@ desc = "单IP每秒最多100次请求"
 
 #### [results] 结果模板
 
+支持两种 TOML 写法：
+
+**写法一：section table（推荐）**
+```toml
+[results.allow]
+code = 0
+message = "ok"
+auth_type = 0
+```
+
+**写法二：inline table**
+```toml
+[results]
+allow = { code = 0, message = "ok", auth_type = 0 }
+```
+
+结果字段说明：
+
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | code | int | 是 | 结果码 |
@@ -452,7 +471,6 @@ desc = "单IP每秒最多100次请求"
 | name | string | 是 | 规则名称（唯一） |
 | match | object | 是 | 匹配条件 |
 | result | string | 是 | 结果模板引用 |
-| desc | string | 否 | 规则描述 |
 
 #### [[rules.*]] 频率控制规则
 
@@ -471,7 +489,11 @@ limit 字段说明:
 |------|------|---------|------|
 | time | duration | count/freq/accumulate | 时间窗口 |
 | count | int | count/freq/accumulate | 计数限制 |
-| base | int | accumulate | 基础阈值 |
+| base | int | accumulate | 基础阈值（达到后启用二级限制） |
+
+> **accumulate 类型说明**: `base` 为主计数器的阈值。当主计数器 <= base 时放行；
+> 超过 base 后，在 `time` 窗口内允许最多 `count` 次请求。
+> 主计数器的 TTL = clamp(time * 10, 1小时, 7天)。
 
 ### 5.3.3 匹配语法
 
@@ -479,14 +501,18 @@ limit 字段说明:
 |------|------|------|
 | 精确匹配 | `act = "post"` | 值等于 "post" |
 | 任意值 | `uid = "+"` | 匹配任何非空值 |
-| 取反 | `vip = "!true"` | 值不等于 "true" |
+| 取反 | `vip = "!true"` | 值不等于 "true"（简单字符串比较） |
 | 多值 | `act = "post,comment"` | 值为列表中任意一个 |
 | 数值范围 | `level = "1-10"` | 数值在范围内 |
 | 大于 | `level = ">5"` | 数值大于 5 |
 | 小于 | `level = "<10"` | 数值小于 10 |
-| IP 通配 | `ip = "192.168.*"` | IP 匹配通配 |
+| IP 通配 | `ip = "192.168.*.*"` | IP 通配匹配（必须为完整 4 段格式） |
 | 字典引用 | `uid = "@whitelist"` | 值在字典中 |
-| 字典取反 | `uid = "!@blacklist"` | 值不在字典中 |
+
+> **注意**：`!` 取反前缀仅支持简单字符串比较（NotMatcher 实现为 `value != pattern[1:]`）。
+> 不支持 `!@dict` 字典取反语法——`"!@blacklist"` 会被解析为 NotMatcher，
+> 执行 `value != "@blacklist"` 的字符串比较，而非"值不在字典中"的语义。
+> 如需实现"值不在黑名单中"的逻辑，请改用白名单规则反向实现。
 
 ### 5.3.4 时间格式
 
@@ -497,8 +523,12 @@ limit 字段说明:
 | s | "30s" | 秒 |
 | m | "5m" | 分钟 |
 | h | "1h" | 小时 |
-| 组合 | "1h30m" | 1小时30分钟 |
-| 特殊 | "24h" | 自然天（到当天 23:59:59） |
+| d | "1d" | 天（ParseLimitTime 转换为 24*N 小时） |
+| 组合 | "1h30m" | 1小时30分钟（Go time.ParseDuration 语法） |
+
+> **关于 "24h"**：`"24h"` 通过 Go 标准库 `time.ParseDuration` 解析，
+> 表示精确的 24 小时时间窗口，**不是**自然日对齐（不会自动截止到当天 23:59:59）。
+> 等价写法：`"1d"`（通过 ParseLimitTime 的天格式支持，转换为 `24 * time.Hour`）。
 
 ## 5.4 字典文件
 
@@ -543,50 +573,64 @@ test_001
 ## 5.5 配置加载流程
 
 ```
-1. 读取 koala.toml
+1. 读取 koala.toml（ConfigWatcher.Load）
    │
-2. 读取 rules.toml
+2. applyDefaults 应用默认值
    │
-3. 解析字典文件
-   │
-4. 验证配置有效性
+3. validateConfig 验证配置
    │   ├─→ 失败: 启动失败，输出错误
    │   └─→ 成功: 继续
    │
-5. 构建 Policy 对象
+4. 读取 rules.toml（LoadRules）
    │
-6. 存入 atomic.Pointer
+5. 解析字典文件（LoadDicts）
    │
-7. 启动文件监听（热重载）
+6. 构建 RuleSet 对象
+   │
+7. Engine 通过 atomic.Pointer[RuleSet] 存储规则集
+   │   （ConfigWatcher 内部用 sync.RWMutex 保护 config/rules/dicts 字段）
+   │
+8. 启动 fsnotify 文件监听（热重载）
 ```
 
 ## 5.6 热重载机制
 
-### 5.6.1 触发条件
+### 5.6.1 触发方式
+
+热重载通过 **fsnotify 事件驱动**实现，监听文件的 Write 和 Create 事件。
+`reload_interval` 字段存在于配置结构中，但当前实际重载逻辑完全由 fsnotify 事件触发，
+不使用轮询机制。
+
+### 5.6.2 触发条件
 
 - rules.toml 文件变化
 - 字典文件变化
+- koala.toml 文件变化（ConfigWatcher 也会监听，但一般建议重启服务）
 
-### 5.6.2 重载流程
+### 5.6.3 重载流程
 
 ```
-1. fsnotify 检测到文件变化
+1. fsnotify 检测到文件 Write/Create 事件
    │
-2. 等待 100ms（防抖）
+2. 防抖检查（同一文件 100ms 内的重复事件被忽略）
    │
 3. 读取并解析新配置
    │
 4. 验证配置有效性
-   │   ├─→ 失败: 记录错误，保留旧配置
+   │   ├─→ 失败: 记录错误日志，保留旧配置
    │   └─→ 成功: 继续
    │
-5. 原子替换 Policy
+5. 更新对应资源：
+   │   ├─→ rules.toml 变化: 通过 ConfigWatcher.mu (RWMutex) 更新 rules
+   │   ├─→ 字典文件变化: 通过 ConfigWatcher.mu (RWMutex) 更新 dicts
+   │   └─→ 上层 Engine 通过 atomic.Pointer 原子替换 RuleSet
    │
-6. 记录重载日志
+6. 触发 onChange 回调，记录变更事件
 ```
 
-### 5.6.3 注意事项
+### 5.6.4 注意事项
 
-- koala.toml 变更需要重启服务
+- koala.toml 虽然也被 ConfigWatcher 监听，但存储类型等变更通常需要重启服务才能完全生效
 - rules.toml 和字典文件支持热重载
-- 配置解析失败不会影响当前运行
+- 配置解析失败不会影响当前运行的规则
+- 防抖机制确保编辑器保存（可能产生多次写事件）只触发一次重载

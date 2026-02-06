@@ -29,14 +29,18 @@ type Config struct {
 	NumCounters int64
 	// BufferItems 是每个 Get 缓冲区的键数量
 	BufferItems int64
+	// CleanupInterval 是后台清理过期列表条目的时间间隔。
+	// 设置为 0 可禁用后台清理。
+	CleanupInterval time.Duration
 }
 
 // DefaultConfig 返回默认配置。
 func DefaultConfig() Config {
 	return Config{
-		MaxCost:     1 << 30, // 1GB
-		NumCounters: 1e7,     // 1000万
-		BufferItems: 64,
+		MaxCost:         1 << 30, // 1GB
+		NumCounters:     1e7,     // 1000万
+		BufferItems:     64,
+		CleanupInterval: 5 * time.Minute, // 每5分钟清理一次过期列表
 	}
 }
 
@@ -56,6 +60,9 @@ type LocalStorage struct {
 	// TTL 管理
 	ttls   map[string]time.Time
 	ttlsMu sync.RWMutex
+
+	// 用于停止后台清理协程的通道
+	stopCh chan struct{}
 
 	closed atomic.Bool
 }
@@ -82,12 +89,20 @@ func New(cfg Config) (*LocalStorage, error) {
 		return nil, err
 	}
 
-	return &LocalStorage{
+	s := &LocalStorage{
 		cache:    cache,
 		counters: make(map[string]*counterEntry),
 		lists:    make(map[string]*listEntry),
 		ttls:     make(map[string]time.Time),
-	}, nil
+		stopCh:   make(chan struct{}),
+	}
+
+	// 如果配置了清理间隔，启动后台清理协程
+	if cfg.CleanupInterval > 0 {
+		go s.cleanupLoop(cfg.CleanupInterval)
+	}
+
+	return s, nil
 }
 
 // =============================================================================
@@ -464,6 +479,8 @@ func (s *LocalStorage) Close() error {
 	if s.closed.Swap(true) {
 		return nil // 已经关闭
 	}
+	// 通知清理协程停止
+	close(s.stopCh)
 	s.cache.Close()
 	return nil
 }
@@ -497,6 +514,65 @@ func (s *LocalStorage) clearTTL(key string) {
 	s.ttlsMu.Lock()
 	delete(s.ttls, key)
 	s.ttlsMu.Unlock()
+}
+
+// cleanupLoop 是后台清理协程的主循环。
+// 定期扫描 lists map，移除空列表和已过期的列表条目。
+func (s *LocalStorage) cleanupLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-ticker.C:
+			s.cleanupLists()
+		}
+	}
+}
+
+// cleanupLists 扫描并清理过期或空的列表条目。
+// 采用保守策略：只移除数据为空的列表或已明确过期的列表条目。
+func (s *LocalStorage) cleanupLists() {
+	now := time.Now()
+
+	// 收集需要删除的键
+	var keysToDelete []string
+
+	s.listsMu.RLock()
+	for key, entry := range s.lists {
+		entry.mu.RLock()
+		isEmpty := len(entry.data) == 0
+		isExpired := !entry.expires.IsZero() && now.After(entry.expires)
+		entry.mu.RUnlock()
+
+		if isEmpty || isExpired {
+			keysToDelete = append(keysToDelete, key)
+		}
+	}
+	s.listsMu.RUnlock()
+
+	// 批量删除过期/空的条目
+	if len(keysToDelete) > 0 {
+		s.listsMu.Lock()
+		for _, key := range keysToDelete {
+			entry, exists := s.lists[key]
+			if !exists {
+				continue
+			}
+			// 二次检查：避免在读锁释放到写锁获取之间有新数据写入
+			entry.mu.RLock()
+			stillEmpty := len(entry.data) == 0
+			stillExpired := !entry.expires.IsZero() && now.After(entry.expires)
+			entry.mu.RUnlock()
+
+			if stillEmpty || stillExpired {
+				delete(s.lists, key)
+			}
+		}
+		s.listsMu.Unlock()
+	}
 }
 
 // 确保 LocalStorage 实现了 storage.Storage 接口

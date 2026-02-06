@@ -27,6 +27,9 @@ const (
 	StorageTypeRedis = "redis"
 )
 
+// sizeRegexp 用于匹配大小字符串的预编译正则表达式（避免每次调用重复编译）。
+var sizeRegexp = regexp.MustCompile(`^(\d+)\s*(KB|MB|GB|TB|K|M|G|T)?$`)
+
 // 默认配置值。
 const (
 	DefaultReadTimeout     = 5 * time.Second
@@ -207,9 +210,8 @@ func ParseSize(s string) (int64, error) {
 		return 0, fmt.Errorf("empty size string")
 	}
 
-	// 用于匹配大小字符串的正则表达式
-	re := regexp.MustCompile(`^(\d+)\s*(KB|MB|GB|TB|K|M|G|T)?$`)
-	matches := re.FindStringSubmatch(strings.ToUpper(s))
+	// 使用预编译的包级别正则表达式匹配大小字符串
+	matches := sizeRegexp.FindStringSubmatch(strings.ToUpper(s))
 
 	if matches == nil {
 		return 0, fmt.Errorf("invalid size format: %s", s)

@@ -62,6 +62,7 @@ type Rule struct {
 type LimitConfig struct {
 	Time  time.Duration // 时间窗口
 	Count int64         // 窗口内最大请求数
+	Base  int64         // 累积阈值（仅 Base 算法使用）
 }
 
 // ResultConfig 结果配置。
@@ -251,6 +252,7 @@ func buildRateRule(rr config.RateRule, phase RulePhase, rulesConfig *config.Rule
 		Limit: LimitConfig{
 			Time:  rr.Limit.Time,
 			Count: int64(rr.Limit.Count),
+			Base:  int64(rr.Limit.Base),
 		},
 		Result: ResultConfig{
 			Code:     result.Code,

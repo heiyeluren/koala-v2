@@ -25,6 +25,9 @@ const (
 	RuleTypeAccumulate = "accumulate"
 )
 
+// dayRegexp 用于匹配天数格式时间字符串的预编译正则表达式。
+var dayRegexp = regexp.MustCompile(`^(\d+)d$`)
+
 // RulesConfig 表示从rules.toml加载的规则配置。
 type RulesConfig struct {
 	Meta    Meta                 `toml:"meta"`
@@ -82,6 +85,7 @@ type RateRule struct {
 type Limit struct {
 	Time  time.Duration `toml:"time"`
 	Count int           `toml:"count"`
+	Base  int           `toml:"base"` // 累积阈值（仅 accumulate 类型使用）
 }
 
 // LoadRules 从TOML文件加载并验证规则配置。
@@ -134,12 +138,12 @@ func validateRules(rules *RulesConfig) error {
 		}
 	}
 
-	// 验证限流规则
-	allRateRules := append(append(append(
-		rules.Rules.Business,
-		rules.Rules.Post...),
-		rules.Rules.Advanced...),
-		rules.Rules.Default...)
+	// 收集所有限流规则（使用独立切片，避免 append 链修改原始切片）
+	var allRateRules []RateRule
+	allRateRules = append(allRateRules, rules.Rules.Business...)
+	allRateRules = append(allRateRules, rules.Rules.Post...)
+	allRateRules = append(allRateRules, rules.Rules.Advanced...)
+	allRateRules = append(allRateRules, rules.Rules.Default...)
 
 	for _, rule := range allRateRules {
 		if err := validateRateRule(rule, resultNames); err != nil {
@@ -208,9 +212,8 @@ func ParseLimitTime(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("empty time string")
 	}
 
-	// 首先检查天格式（time.ParseDuration不支持）
-	re := regexp.MustCompile(`^(\d+)d$`)
-	if matches := re.FindStringSubmatch(s); matches != nil {
+	// 首先检查天格式（time.ParseDuration不支持），使用预编译的包级别正则表达式
+	if matches := dayRegexp.FindStringSubmatch(s); matches != nil {
 		days, err := strconv.Atoi(matches[1])
 		if err != nil {
 			return 0, fmt.Errorf("invalid day value: %s", s)

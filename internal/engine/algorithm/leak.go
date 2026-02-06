@@ -10,6 +10,7 @@ package algorithm
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"koala/internal/storage"
@@ -18,15 +19,27 @@ import (
 // Leak 实现漏桶算法。
 // 它维护一个时间戳列表，并随着时间"泄漏"旧条目。
 // 桶在时间窗口内最多可容纳Count个请求。
-type Leak struct{}
+type Leak struct {
+	keyLocks sync.Map // 按 key 加锁，避免 LRange+LTrim 竞态
+}
 
 // NewLeak 创建一个新的Leak算法实例。
 func NewLeak() *Leak {
 	return &Leak{}
 }
 
+// getLock 获取指定 key 的互斥锁。
+func (l *Leak) getLock(key string) *sync.Mutex {
+	val, _ := l.keyLocks.LoadOrStore(key, &sync.Mutex{})
+	return val.(*sync.Mutex)
+}
+
 // Browse 检查桶是否已满。
 func (l *Leak) Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (bool, error) {
+	mu := l.getLock(key)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// 首先，清理过期条目
 	err := l.cleanExpired(ctx, key, limit, store)
 	if err != nil {
@@ -44,6 +57,10 @@ func (l *Leak) Browse(ctx context.Context, key string, limit LimitConfig, store 
 
 // Update 向桶中添加新的时间戳。
 func (l *Leak) Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
+	mu := l.getLock(key)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// 先清理过期条目
 	err := l.cleanExpired(ctx, key, limit, store)
 	if err != nil {

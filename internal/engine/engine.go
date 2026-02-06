@@ -11,11 +11,13 @@ package engine
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"koala/internal/config"
 	"koala/internal/engine/algorithm"
 	"koala/internal/storage"
+	"koala/pkg/logger"
 )
 
 // Engine 是Koala反作弊频率控制系统的核心规则引擎。
@@ -24,6 +26,7 @@ type Engine struct {
 	rules   atomic.Pointer[RuleSet]     // 原子指针，支持热加载
 	storage storage.Storage             // 存储后端
 	dicts   *config.DictManager         // 字典管理器
+	mu      sync.RWMutex               // 保护 storage 和 dicts 字段
 }
 
 // Option 引擎配置选项。
@@ -74,12 +77,30 @@ func (e *Engine) GetRuleSet() *RuleSet {
 
 // SetStorage 设置存储后端。
 func (e *Engine) SetStorage(s storage.Storage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.storage = s
 }
 
 // SetDicts 设置字典管理器。
 func (e *Engine) SetDicts(dicts *config.DictManager) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.dicts = dicts
+}
+
+// getStorage 获取当前存储实例（并发安全）。
+func (e *Engine) getStorage() storage.Storage {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.storage
+}
+
+// getDicts 获取当前字典管理器（并发安全）。
+func (e *Engine) getDicts() *config.DictManager {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.dicts
 }
 
 // Check 执行限流检查。
@@ -101,8 +122,64 @@ func (e *Engine) Check(ctx context.Context, req *Request) (*Response, error) {
 		return NewAllowedResponse(), nil
 	}
 
+	return e.matchRules(ctx, ruleSet, req, true)
+}
+
+// checkRateLimit 检查是否触发限流。
+func (e *Engine) checkRateLimit(ctx context.Context, rule *Rule, req *Request) (bool, error) {
+	s := e.getStorage()
+	if s == nil {
+		// 没有存储后端，无法检查限流，默认不触发
+		return false, nil
+	}
+
+	key := rule.GenerateKey(req)
+	limitCfg := algorithm.LimitConfig{
+		Time:  rule.Limit.Time,
+		Count: rule.Limit.Count,
+		Base:  rule.Limit.Base,
+	}
+
+	return rule.Algorithm.Browse(ctx, key, limitCfg, s)
+}
+
+// updateCounter 更新限流计数器。
+func (e *Engine) updateCounter(ctx context.Context, rule *Rule, req *Request) error {
+	s := e.getStorage()
+	if s == nil {
+		return nil
+	}
+
+	key := rule.GenerateKey(req)
+	limitCfg := algorithm.LimitConfig{
+		Time:  rule.Limit.Time,
+		Count: rule.Limit.Count,
+		Base:  rule.Limit.Base,
+	}
+
+	return rule.Algorithm.Update(ctx, key, limitCfg, s)
+}
+
+// Browse 仅检查限流状态，不更新计数器。
+// 用于只需要查询当前状态的场景。
+func (e *Engine) Browse(ctx context.Context, req *Request) (*Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("request is nil")
+	}
+
+	ruleSet := e.rules.Load()
+	if ruleSet == nil {
+		return NewAllowedResponse(), nil
+	}
+
+	return e.matchRules(ctx, ruleSet, req, false)
+}
+
+// matchRules 在规则集中匹配请求，返回匹配结果。
+// updateOnMatch 控制匹配到限流规则且未触发限制时是否更新计数器。
+func (e *Engine) matchRules(ctx context.Context, ruleSet *RuleSet, req *Request, updateOnMatch bool) (*Response, error) {
 	// 阶段1：访问控制
-	// 1.1 检查白名单（匹配则直接允许）
+	// 1.1 检查白名单
 	for _, rule := range ruleSet.Whitelist {
 		if rule.Matches(req) {
 			return &Response{
@@ -115,7 +192,7 @@ func (e *Engine) Check(ctx context.Context, req *Request) (*Response, error) {
 		}
 	}
 
-	// 1.2 检查黑名单（匹配则直接拒绝）
+	// 1.2 检查黑名单
 	for _, rule := range ruleSet.Blacklist {
 		if rule.Matches(req) {
 			return &Response{
@@ -157,11 +234,12 @@ func (e *Engine) Check(ctx context.Context, req *Request) (*Response, error) {
 					}, nil
 				}
 
-				// 未触发限流，更新计数器并允许
-				if err := e.updateCounter(ctx, rule, req); err != nil {
-					// 更新计数器失败不应阻止请求
-					// 但应记录错误（实际应用中应使用日志）
-					_ = err
+				// 未触发限流
+				if updateOnMatch {
+					// 更新计数器，失败不阻止请求但记录错误
+					if err := e.updateCounter(ctx, rule, req); err != nil {
+						logger.Error("更新计数器失败", "rule", rule.Name, "error", err)
+					}
 				}
 
 				// 规则已匹配且未触发限流，允许请求
@@ -171,107 +249,5 @@ func (e *Engine) Check(ctx context.Context, req *Request) (*Response, error) {
 	}
 
 	// 没有匹配任何规则，默认允许
-	return NewAllowedResponse(), nil
-}
-
-// checkRateLimit 检查是否触发限流。
-func (e *Engine) checkRateLimit(ctx context.Context, rule *Rule, req *Request) (bool, error) {
-	if e.storage == nil {
-		// 没有存储后端，无法检查限流，默认不触发
-		return false, nil
-	}
-
-	key := rule.GenerateKey(req)
-	limitCfg := algorithm.LimitConfig{
-		Time:  rule.Limit.Time,
-		Count: rule.Limit.Count,
-	}
-
-	return rule.Algorithm.Browse(ctx, key, limitCfg, e.storage)
-}
-
-// updateCounter 更新限流计数器。
-func (e *Engine) updateCounter(ctx context.Context, rule *Rule, req *Request) error {
-	if e.storage == nil {
-		return nil
-	}
-
-	key := rule.GenerateKey(req)
-	limitCfg := algorithm.LimitConfig{
-		Time:  rule.Limit.Time,
-		Count: rule.Limit.Count,
-	}
-
-	return rule.Algorithm.Update(ctx, key, limitCfg, e.storage)
-}
-
-// Browse 仅检查限流状态，不更新计数器。
-// 用于只需要查询当前状态的场景。
-func (e *Engine) Browse(ctx context.Context, req *Request) (*Response, error) {
-	if req == nil {
-		return nil, fmt.Errorf("request is nil")
-	}
-
-	ruleSet := e.rules.Load()
-	if ruleSet == nil {
-		return NewAllowedResponse(), nil
-	}
-
-	// 阶段1：访问控制
-	for _, rule := range ruleSet.Whitelist {
-		if rule.Matches(req) {
-			return &Response{
-				Allowed:  true,
-				Code:     rule.Result.Code,
-				Message:  rule.Result.Message,
-				RuleName: rule.Name,
-				AuthType: rule.Result.AuthType,
-			}, nil
-		}
-	}
-
-	for _, rule := range ruleSet.Blacklist {
-		if rule.Matches(req) {
-			return &Response{
-				Allowed:  false,
-				Code:     rule.Result.Code,
-				Message:  rule.Result.Message,
-				RuleName: rule.Name,
-				AuthType: rule.Result.AuthType,
-			}, nil
-		}
-	}
-
-	// 阶段2：限流规则（只检查不更新）
-	phases := [][]*Rule{
-		ruleSet.Business,
-		ruleSet.Post,
-		ruleSet.Advanced,
-		ruleSet.Default,
-	}
-
-	for _, rules := range phases {
-		for _, rule := range rules {
-			if rule.Matches(req) {
-				hit, err := e.checkRateLimit(ctx, rule, req)
-				if err != nil {
-					return nil, fmt.Errorf("check rate limit failed: %w", err)
-				}
-
-				if hit {
-					return &Response{
-						Allowed:  false,
-						Code:     rule.Result.Code,
-						Message:  rule.Result.Message,
-						RuleName: rule.Name,
-						AuthType: rule.Result.AuthType,
-					}, nil
-				}
-
-				return NewAllowedResponse(), nil
-			}
-		}
-	}
-
 	return NewAllowedResponse(), nil
 }

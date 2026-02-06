@@ -13,6 +13,30 @@ Koala V2 提供四种限流算法，满足不同的业务场景：
 
 > **注意**: 配置文件中使用的类型名称为 `count`、`freq`、`accumulate`，分别对应 Count、Leak、Base 算法。
 
+### 算法接口定义
+
+```go
+// internal/engine/algorithm/interface.go
+
+type Algorithm interface {
+    // Browse 检查是否达到限流阈值。
+    // 返回 true 表示达到限制（应拒绝），返回 false 表示未达到限制（应允许）。
+    Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (hit bool, err error)
+
+    // Update 递增指定键的计数器。
+    Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error
+
+    // Name 返回算法名称。
+    Name() string
+}
+
+type LimitConfig struct {
+    Time  time.Duration // 时间窗口
+    Count int64         // 窗口内的计数限制
+    Base  int64         // 基础阈值（用于Base算法）
+}
+```
+
 ## 3.2 Direct 算法
 
 ### 3.2.1 原理
@@ -40,25 +64,31 @@ package algorithm
 
 import (
     "context"
+
+    "koala/internal/storage"
 )
 
-type DirectAlgorithm struct{}
+type Direct struct{}
 
-func NewDirect() *DirectAlgorithm {
-    return &DirectAlgorithm{}
+func NewDirect() *Direct {
+    return &Direct{}
 }
 
-// Browse 检查是否命中
-// 返回: hit=true 表示命中规则
-func (a *DirectAlgorithm) Browse(ctx context.Context, key string, limit LimitConfig, storage Storage) (hit bool, err error) {
+// Browse 对于Direct算法始终返回 hit=true。
+func (d *Direct) Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (hit bool, err error) {
     // Direct 算法不需要查询存储
     // 命中与否由 Matcher 决定，到达这里说明已经匹配成功
     return true, nil
 }
 
-// Update Direct 算法无需更新
-func (a *DirectAlgorithm) Update(ctx context.Context, key string, limit LimitConfig, storage Storage) error {
+// Update 对于Direct算法是空操作。
+func (d *Direct) Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
     return nil
+}
+
+// Name 返回算法名称。
+func (d *Direct) Name() string {
+    return "direct"
 }
 ```
 
@@ -95,28 +125,14 @@ result = "deny"
         窗口结束时计数器自动过期
 ```
 
-### 3.3.2 特殊处理：自然天
-
-当 `time = 24h` 时，过期时间计算到当天 23:59:59：
-
-```go
-if limit.Time == 24*time.Hour {
-    // 计算到今天结束的剩余时间
-    now := time.Now()
-    endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
-    ttl = endOfDay.Sub(now)
-}
-```
-
-### 3.3.3 Redis 操作
+### 3.3.2 Redis 操作
 
 | 操作 | 命令 | 说明 |
 |------|------|------|
 | 检查 | `GET key` | 获取当前计数 |
-| 首次更新 | `SET key 1 EX ttl` | 设置初始值和过期时间 |
-| 后续更新 | `INCR key` | 原子递增 |
+| 更新 | `INCRWITHTTL key ttl` | 原子递增并设置过期时间 |
 
-### 3.3.4 实现代码
+### 3.3.3 实现代码
 
 ```go
 // internal/engine/algorithm/count.go
@@ -125,60 +141,43 @@ package algorithm
 
 import (
     "context"
-    "time"
+
+    "koala/internal/storage"
 )
 
-type CountAlgorithm struct{}
+type Count struct{}
 
-func NewCount() *CountAlgorithm {
-    return &CountAlgorithm{}
+func NewCount() *Count {
+    return &Count{}
 }
 
-// Browse 检查计数是否超限
-func (a *CountAlgorithm) Browse(ctx context.Context, key string, limit LimitConfig, storage Storage) (hit bool, err error) {
-    // 获取当前计数
-    count, err := storage.GetInt(ctx, key)
+// Browse 检查计数器是否已达到限制。
+func (c *Count) Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (bool, error) {
+    count, err := store.GetInt(ctx, key)
     if err != nil {
-        if err == ErrKeyNotFound {
-            return false, nil  // 首次请求，未超限
+        if err == storage.ErrKeyNotFound {
+            return false, nil // 尚无计数，未达到限制
         }
         return false, err
     }
 
-    // 检查是否超限
     return count >= limit.Count, nil
 }
 
-// Update 增加计数
-func (a *CountAlgorithm) Update(ctx context.Context, key string, limit LimitConfig, storage Storage) error {
-    // 检查 key 是否存在
-    exists, err := storage.Exists(ctx, key)
-    if err != nil {
-        return err
-    }
-
-    if !exists {
-        // 首次请求，设置初始值和过期时间
-        ttl := a.calculateTTL(limit.Time)
-        return storage.SetInt(ctx, key, 1, ttl)
-    }
-
-    // 递增计数
-    _, err = storage.Incr(ctx, key)
+// Update 递增计数器并设置TTL过期时间。
+func (c *Count) Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
+    _, err := store.IncrWithTTL(ctx, key, limit.Time)
     return err
 }
 
-// calculateTTL 计算过期时间
-func (a *CountAlgorithm) calculateTTL(duration time.Duration) time.Duration {
-    // 24 小时特殊处理：计算到当天结束
-    if duration == 24*time.Hour {
-        now := time.Now()
-        endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location())
-        return endOfDay.Sub(now)
-    }
-    return duration
+// Name 返回算法名称。
+func (c *Count) Name() string {
+    return "count"
 }
 ```
+
+> **设计说明**: Update 使用 `IncrWithTTL` 原子操作，避免 `Exists + SetInt / Incr` 的竞态条件。
+> 首次调用时 `IncrWithTTL` 会创建 key 并设置 TTL；后续调用只递增计数，TTL 不变。
 
 ### 3.3.5 配置示例
 
@@ -244,10 +243,10 @@ desc = "每分钟最多发帖3次"
 
 | 操作 | 键 | 命令 |
 |------|-----|------|
-| 主计数器检查 | `{key}` | `GET` |
-| 主计数器更新 | `{key}` | `INCR` |
-| 次级计数器检查 | `{key}_B` | `GET` |
-| 次级计数器更新 | `{key}_B` | `SETEX` / `INCR` |
+| 主计数器检查 | `{key}:total` | `GET` |
+| 主计数器更新 | `{key}:total` | `INCRWITHTTL`（带 clampTTL） |
+| 次级计数器检查 | `{key}:secondary` | `GET` |
+| 次级计数器更新 | `{key}:secondary` | `INCRWITHTTL` |
 
 ### 3.4.4 实现代码
 
@@ -259,88 +258,90 @@ package algorithm
 import (
     "context"
     "time"
+
+    "koala/internal/storage"
 )
 
-type BaseAlgorithm struct{}
+type Base struct{}
 
-func NewBase() *BaseAlgorithm {
-    return &BaseAlgorithm{}
+func NewBase() *Base {
+    return &Base{}
 }
 
-const baseSuffix = "_B"
-
 // Browse 检查是否超限
-func (a *BaseAlgorithm) Browse(ctx context.Context, key string, limit LimitConfig, storage Storage) (hit bool, err error) {
-    // 1. 获取主计数器
-    mainCount, err := storage.GetInt(ctx, key)
-    if err != nil && err != ErrKeyNotFound {
+// 未达到/刚好达到基础阈值时：始终返回 false（未命中）。
+// 超过基础阈值时：检查二级限制。
+func (b *Base) Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (bool, error) {
+    // 获取总计数
+    totalKey := key + ":total"
+    total, err := store.GetInt(ctx, totalKey)
+    if err != nil && err != storage.ErrKeyNotFound {
         return false, err
     }
 
-    // 未达到基础阈值，放行
-    if mainCount < limit.Base {
+    // 未达到或刚好达到基础阈值，未命中
+    if total <= limit.Base {
         return false, nil
     }
 
-    // 2. 达到基础阈值，检查次级计数器
-    secondaryKey := key + baseSuffix
-    secondaryCount, err := storage.GetInt(ctx, secondaryKey)
-    if err != nil && err != ErrKeyNotFound {
+    // 超过基础阈值，检查二级限制
+    secondaryKey := key + ":secondary"
+    count, err := store.GetInt(ctx, secondaryKey)
+    if err != nil && err != storage.ErrKeyNotFound {
         return false, err
     }
 
-    // 次级计数器超限
-    return secondaryCount >= limit.Count, nil
+    return count >= limit.Count, nil
 }
 
-// Update 更新计数器
-func (a *BaseAlgorithm) Update(ctx context.Context, key string, limit LimitConfig, storage Storage) error {
-    // 1. 检查主计数器是否存在
-    exists, err := storage.Exists(ctx, key)
+// Update 递增总计数器和二级计数器
+func (b *Base) Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
+    // 递增总计数（带 TTL，防止永不过期导致内存泄漏）
+    totalKey := key + ":total"
+    total, err := store.IncrWithTTL(ctx, totalKey, clampTTL(limit.Time))
     if err != nil {
         return err
     }
 
-    if !exists {
-        // 首次请求，初始化主计数器（24小时过期）
-        ttl := a.calculateMainTTL()
-        return storage.SetInt(ctx, key, 1, ttl)
-    }
-
-    // 2. 递增主计数器
-    mainCount, err := storage.Incr(ctx, key)
-    if err != nil {
-        return err
-    }
-
-    // 3. 达到基础阈值后，更新次级计数器
-    if mainCount >= limit.Base {
-        secondaryKey := key + baseSuffix
-        secondaryExists, err := storage.Exists(ctx, secondaryKey)
+    // 如果超过基础阈值（严格大于），同时递增二级计数器
+    if total > limit.Base {
+        secondaryKey := key + ":secondary"
+        _, err = store.IncrWithTTL(ctx, secondaryKey, limit.Time)
         if err != nil {
             return err
         }
-
-        if !secondaryExists {
-            // 首次触发，初始化次级计数器
-            return storage.SetInt(ctx, secondaryKey, 1, limit.Time)
-        }
-
-        // 递增次级计数器
-        _, err = storage.Incr(ctx, secondaryKey)
-        return err
     }
 
     return nil
 }
 
-// calculateMainTTL 计算主计数器过期时间（到当天结束）
-func (a *BaseAlgorithm) calculateMainTTL() time.Duration {
-    now := time.Now()
-    endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location())
-    return endOfDay.Sub(now)
+// clampTTL 计算 totalKey 的 TTL。
+// TTL = clamp(limit.Time * 10, 1小时, 7天)
+func clampTTL(windowTime time.Duration) time.Duration {
+    ttl := windowTime * 10
+    const minTTL = time.Hour
+    const maxTTL = 7 * 24 * time.Hour
+    if ttl < minTTL {
+        ttl = minTTL
+    }
+    if ttl > maxTTL {
+        ttl = maxTTL
+    }
+    return ttl
+}
+
+// Name 返回算法名称。
+func (b *Base) Name() string {
+    return "base"
 }
 ```
+
+> **设计说明**:
+> - 阈值判断使用 `total <= limit.Base`（小于等于），即刚好达到 Base 时仍然放行，
+>   超过 Base 后才启用二级限制。
+> - 主计数器 TTL 使用 `clampTTL(windowTime)` —— 函数内部执行 `windowTime * 10` 并
+>   clamp 到 [1h, 7d] 范围，而非固定的"到当天结束"，以适应不同时间窗口场景，同时防止内存泄漏。
+> - 使用 `IncrWithTTL` 原子操作，避免 `Exists + SetInt / Incr` 的竞态条件。
 
 ### 3.4.5 配置示例
 
@@ -384,13 +385,40 @@ desc = "同IP每天超过10次后，每5秒限1次"
 
 | 操作 | 命令 | 说明 |
 |------|------|------|
-| 获取长度 | `LLEN key` | 列表当前长度 |
-| 获取元素 | `LINDEX key index` | 获取指定位置的时间戳 |
+| 获取长度 | `LLEN key` | 列表当前长度（清理后） |
+| 获取所有元素 | `LRANGE key 0 -1` | 获取全部时间戳（用于过期清理） |
 | 插入元素 | `LPUSH key timestamp` | 在头部插入新时间戳 |
-| 裁剪列表 | `LTRIM key 0 count` | 保留最新的 count+1 个元素 |
-| 设置过期 | `EXPIRE key ttl` | 设置列表过期时间 |
+| 裁剪列表 | `LTRIM key start end` | 移除过期时间戳 |
 
-### 3.5.4 实现代码
+### 3.5.4 并发安全：按 Key 加锁
+
+Leak 算法的 `LRange + LTrim` 操作不是原子的，可能产生竞态条件。
+实现中使用 `sync.Map` 为每个 key 维护独立的 `sync.Mutex`：
+
+```go
+type Leak struct {
+    keyLocks sync.Map // 按 key 加锁，避免 LRange+LTrim 竞态
+}
+
+// getLock 获取指定 key 的互斥锁。
+func (l *Leak) getLock(key string) *sync.Mutex {
+    val, _ := l.keyLocks.LoadOrStore(key, &sync.Mutex{})
+    return val.(*sync.Mutex)
+}
+
+// Browse 和 Update 方法都需要先获取 key 锁
+func (l *Leak) Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (bool, error) {
+    mu := l.getLock(key)
+    mu.Lock()
+    defer mu.Unlock()
+    // ...清理过期条目后检查桶大小
+}
+```
+
+> **设计说明**: 不同 key 之间不互相阻塞，同一 key 的操作串行化，
+> 确保 `LRange` 读取和 `LTrim` 裁剪之间不会被其他请求插入新数据。
+
+### 3.5.5 实现代码
 
 ```go
 // internal/engine/algorithm/leak.go
@@ -399,76 +427,107 @@ package algorithm
 
 import (
     "context"
+    "sync"
     "time"
+
+    "koala/internal/storage"
 )
 
-type LeakAlgorithm struct{}
-
-func NewLeak() *LeakAlgorithm {
-    return &LeakAlgorithm{}
+type Leak struct {
+    keyLocks sync.Map // 按 key 加锁，避免 LRange+LTrim 竞态
 }
 
-// Browse 检查是否超限
-func (a *LeakAlgorithm) Browse(ctx context.Context, key string, limit LimitConfig, storage Storage) (hit bool, err error) {
-    // 1. 获取列表长度
-    length, err := storage.LLen(ctx, key)
+func NewLeak() *Leak {
+    return &Leak{}
+}
+
+func (l *Leak) getLock(key string) *sync.Mutex {
+    val, _ := l.keyLocks.LoadOrStore(key, &sync.Mutex{})
+    return val.(*sync.Mutex)
+}
+
+// Browse 检查桶是否已满
+func (l *Leak) Browse(ctx context.Context, key string, limit LimitConfig, store storage.Storage) (bool, error) {
+    mu := l.getLock(key)
+    mu.Lock()
+    defer mu.Unlock()
+
+    // 首先，清理过期条目
+    err := l.cleanExpired(ctx, key, limit, store)
     if err != nil {
         return false, err
     }
 
-    // 列表长度不足，放行
-    if length <= limit.Count {
-        return false, nil
+    // 检查桶大小
+    length, err := store.LLen(ctx, key)
+    if err != nil {
+        return false, err
     }
 
-    // 2. 获取第 count 个元素的时间戳
-    timestamp, err := storage.LIndex(ctx, key, limit.Count)
+    return length >= limit.Count, nil
+}
+
+// Update 向桶中添加新的时间戳
+func (l *Leak) Update(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
+    mu := l.getLock(key)
+    mu.Lock()
+    defer mu.Unlock()
+
+    // 先清理过期条目
+    err := l.cleanExpired(ctx, key, limit, store)
     if err != nil {
-        if err == ErrKeyNotFound || err == ErrIndexOutOfRange {
-            return false, nil
+        return err
+    }
+
+    // 添加当前时间戳（毫秒精度）
+    now := time.Now().UnixMilli()
+    return store.LPush(ctx, key, now)
+}
+
+// cleanExpired 移除超出时间窗口的旧时间戳
+func (l *Leak) cleanExpired(ctx context.Context, key string, limit LimitConfig, store storage.Storage) error {
+    now := time.Now().UnixMilli()
+    windowStart := now - limit.Time.Milliseconds()
+
+    // 获取所有条目
+    values, err := store.LRange(ctx, key, 0, -1)
+    if err != nil {
+        return err
+    }
+
+    if len(values) == 0 {
+        return nil
+    }
+
+    // 找到窗口内第一个有效条目的索引
+    validStart := -1
+    for i, ts := range values {
+        if ts >= windowStart {
+            validStart = i
+            break
         }
-        return false, err
     }
 
-    // 3. 检查时间差
-    now := time.Now().Unix()
-    if now-timestamp <= int64(limit.Time.Seconds()) {
-        // 时间窗口内已有 count 个请求，拒绝
-        return true, nil
+    if validStart == -1 {
+        // 所有条目都已过期，清空列表
+        return store.LTrim(ctx, key, 1, 0)
     }
 
-    return false, nil
-}
-
-// Update 记录请求时间戳
-func (a *LeakAlgorithm) Update(ctx context.Context, key string, limit LimitConfig, storage Storage) error {
-    now := time.Now().Unix()
-
-    // 1. 在列表头部插入当前时间戳
-    if err := storage.LPush(ctx, key, now); err != nil {
-        return err
+    if validStart > 0 {
+        // 修剪过期条目
+        return store.LTrim(ctx, key, 0, int64(len(values)-validStart-1))
     }
-
-    // 2. 设置过期时间（时间窗口的 2 倍，留有余量）
-    ttl := limit.Time * 2
-    if err := storage.Expire(ctx, key, ttl); err != nil {
-        return err
-    }
-
-    // 3. 异步清理旧元素（保留 count+1 个）
-    go a.cleanup(ctx, key, limit.Count, storage)
 
     return nil
 }
 
-// cleanup 清理过期元素
-func (a *LeakAlgorithm) cleanup(ctx context.Context, key string, count int64, storage Storage) {
-    // 裁剪列表，只保留前 count+1 个元素
-    _ = storage.LTrim(ctx, key, 0, count)
+// Name 返回算法名称。
+func (l *Leak) Name() string {
+    return "leak"
 }
 ```
 
-### 3.5.5 配置示例
+### 3.5.6 配置示例
 
 ```toml
 [[rules.advanced]]
@@ -493,232 +552,417 @@ desc = "API调用60秒内平滑限制100次"
 | 数值范围 | `"1-100"` | 数值在 1 到 100 之间 |
 | 大于 | `">1000"` | 数值大于 1000 |
 | 小于 | `"<100"` | 数值小于 100 |
-| IP 通配 | `"192.168.*"` | IP 匹配通配模式 |
-| IP 范围 | `"192.168.0.1-192.168.0.255"` | IP 在范围内 |
+| IP 通配 | `"192.168.*.*"` | IP 匹配通配模式 |
 | 字典引用 | `"@whitelist"` | 值在字典 whitelist 中 |
 | 字典取反 | `"!@blacklist"` | 值不在字典 blacklist 中 |
 
 ### 3.6.2 匹配器实现
 
+匹配器位于独立子包 `internal/engine/matcher/`，采用**无状态设计**。
+所有 Matcher 都是空结构体，不持有任何字段；pattern 在每次 `Match` 调用时解析。
+
+文件结构：
+
+```
+internal/engine/matcher/
+├── matcher.go      // 接口定义、Parse 函数、辅助函数
+├── exact.go        // ExactMatcher
+├── any.go          // AnyMatcher
+├── not.go          // NotMatcher
+├── multi.go        // MultiMatcher
+├── range.go        // RangeMatcher
+├── greater.go      // GreaterMatcher
+├── less.go         // LessMatcher
+├── ip.go           // IPMatcher（IP 通配符匹配）
+├── dict.go         // DictMatcher（唯一有状态的 matcher，单例模式）
+└── matcher_test.go // 测试
+```
+
+#### Matcher 接口
+
 ```go
-// internal/engine/matcher.go
+// internal/engine/matcher/matcher.go
 
-package engine
+package matcher
 
-import (
-    "net"
-    "strconv"
-    "strings"
-)
-
+// Matcher 定义模式匹配的接口。
 type Matcher interface {
-    Match(value string) bool
+    // Match 检查值是否与模式匹配。
+    // pattern 是规则配置中的匹配模式，value 是请求中的实际值。
+    Match(pattern string, value string) bool
+
+    // Type 返回匹配器的类型名称。
+    Type() string
+}
+```
+
+> **设计说明**: 接口采用 2 参数 `Match(pattern, value)` 设计，而非预编译模式。
+> 这使得所有 Matcher（除 DictMatcher 外）都是无状态空结构体，
+> 可以安全地在多个规则之间共享，无需同步。
+
+#### Parse 函数
+
+```go
+// internal/engine/matcher/matcher.go
+
+// Parse 分析模式并返回适当的匹配器。
+// 模式前缀决定匹配器类型：
+//   - "+" -> AnyMatcher（匹配任何非空值）
+//   - "!" -> NotMatcher（当值不等于模式时匹配）
+//   - "@" -> DictMatcher（当值在字典中时匹配，返回单例 defaultDictMatcher）
+//   - ">" -> GreaterMatcher（当值大于阈值时匹配）
+//   - "<" -> LessMatcher（当值小于阈值时匹配）
+//   - 包含"," -> MultiMatcher（当值在列表中时匹配）
+//   - 包含"-"且两侧为数字 -> RangeMatcher
+//   - 包含"*"的IP格式 -> IPMatcher
+//   - 默认 -> ExactMatcher
+func Parse(pattern string) Matcher {
+    if len(pattern) == 0 {
+        return &ExactMatcher{}
+    }
+
+    switch pattern[0] {
+    case '+':
+        return &AnyMatcher{}
+    case '!':
+        return &NotMatcher{}
+    case '@':
+        return defaultDictMatcher
+    case '>':
+        return &GreaterMatcher{}
+    case '<':
+        return &LessMatcher{}
+    }
+
+    if strings.Contains(pattern, ",") {
+        return &MultiMatcher{}
+    }
+
+    if isRangePattern(pattern) {
+        return &RangeMatcher{}
+    }
+
+    if isIPWildcardPattern(pattern) {
+        return &IPMatcher{}
+    }
+
+    return &ExactMatcher{}
+}
+```
+
+> **注意**: `Parse` 返回 `Matcher`，无 error 返回值。DictMatcher 使用包级单例 `defaultDictMatcher`，
+> 字典数据通过 `RegisterDict` / `RegisterDictSlice` 包级函数预先注册。
+
+#### 各 Matcher 实现
+
+**ExactMatcher** — 精确匹配（`exact.go`）
+
+```go
+// internal/engine/matcher/exact.go
+
+package matcher
+
+// ExactMatcher 当值与模式完全相等时匹配。
+type ExactMatcher struct{}
+
+func (m *ExactMatcher) Match(pattern string, value string) bool {
+    return pattern == value
 }
 
-// ExactMatcher 精确匹配
-type ExactMatcher struct {
-    expected string
+func (m *ExactMatcher) Type() string {
+    return "exact"
 }
+```
 
-func (m *ExactMatcher) Match(value string) bool {
-    return value == m.expected
-}
+**AnyMatcher** — 任意非空值匹配（`any.go`）
 
-// AnyMatcher 任意值匹配
+```go
+// internal/engine/matcher/any.go
+
+package matcher
+
+// AnyMatcher 匹配任何非空值。模式应为 "+"。
 type AnyMatcher struct{}
 
-func (m *AnyMatcher) Match(value string) bool {
-    return value != ""
+func (m *AnyMatcher) Match(pattern string, value string) bool {
+    return len(value) > 0
 }
 
-// NotMatcher 取反匹配
-type NotMatcher struct {
-    inner Matcher
+func (m *AnyMatcher) Type() string {
+    return "any"
+}
+```
+
+**NotMatcher** — 取反匹配（`not.go`）
+
+```go
+// internal/engine/matcher/not.go
+
+package matcher
+
+// NotMatcher 当值不等于模式时匹配。
+// 模式格式："!value"，Match 时去除 "!" 前缀后直接与 value 比较。
+// 注意：这是无状态设计，不内嵌其他 Matcher，直接字符串比较。
+type NotMatcher struct{}
+
+func (m *NotMatcher) Match(pattern string, value string) bool {
+    if len(pattern) == 0 {
+        return true
+    }
+    negatedValue := pattern[1:] // 移除 "!" 前缀
+    return value != negatedValue
 }
 
-func (m *NotMatcher) Match(value string) bool {
-    return !m.inner.Match(value)
+func (m *NotMatcher) Type() string {
+    return "not"
+}
+```
+
+**MultiMatcher** — 多值匹配（`multi.go`）
+
+```go
+// internal/engine/matcher/multi.go
+
+package matcher
+
+import "strings"
+
+// MultiMatcher 当值是模式中逗号分隔值之一时匹配。
+// 模式格式："a,b,c"，每次 Match 时解析逗号分隔列表。
+type MultiMatcher struct{}
+
+func (m *MultiMatcher) Match(pattern string, value string) bool {
+    parts := strings.Split(pattern, ",")
+    for _, part := range parts {
+        trimmed := strings.TrimSpace(part)
+        if trimmed == value {
+            return true
+        }
+    }
+    return false
 }
 
-// MultiMatcher 多值匹配
-type MultiMatcher struct {
-    values map[string]struct{}
+func (m *MultiMatcher) Type() string {
+    return "multi"
 }
+```
 
-func (m *MultiMatcher) Match(value string) bool {
-    _, ok := m.values[value]
-    return ok
-}
+**RangeMatcher** — 数值范围匹配（`range.go`）
 
-// RangeMatcher 范围匹配
-type RangeMatcher struct {
-    min, max int64
-}
+```go
+// internal/engine/matcher/range.go
 
-func (m *RangeMatcher) Match(value string) bool {
-    v, err := strconv.ParseInt(value, 10, 64)
+package matcher
+
+import "strconv"
+
+// RangeMatcher 当数值在指定范围内时匹配。
+// 模式格式："min-max"，支持负数如 "-10-10"。
+type RangeMatcher struct{}
+
+func (m *RangeMatcher) Match(pattern string, value string) bool {
+    val, err := strconv.ParseInt(value, 10, 64)
     if err != nil {
         return false
     }
-    return v >= m.min && v <= m.max
+    min, max, ok := parseRange(pattern)
+    if !ok {
+        return false
+    }
+    return val >= min && val <= max
 }
 
-// GreaterMatcher 大于匹配
-type GreaterMatcher struct {
-    threshold int64
+func (m *RangeMatcher) Type() string {
+    return "range"
 }
+```
 
-func (m *GreaterMatcher) Match(value string) bool {
-    v, err := strconv.ParseInt(value, 10, 64)
+**GreaterMatcher** — 大于匹配（`greater.go`）
+
+```go
+// internal/engine/matcher/greater.go
+
+package matcher
+
+import "strconv"
+
+// GreaterMatcher 当数值大于阈值时匹配。
+// 模式格式：">10"，Match 时从 pattern 中解析阈值。
+type GreaterMatcher struct{}
+
+func (m *GreaterMatcher) Match(pattern string, value string) bool {
+    if len(pattern) < 2 {
+        return false
+    }
+    threshold, err := strconv.ParseInt(pattern[1:], 10, 64)
     if err != nil {
         return false
     }
-    return v > m.threshold
-}
-
-// LessMatcher 小于匹配
-type LessMatcher struct {
-    threshold int64
-}
-
-func (m *LessMatcher) Match(value string) bool {
-    v, err := strconv.ParseInt(value, 10, 64)
+    val, err := strconv.ParseInt(value, 10, 64)
     if err != nil {
         return false
     }
-    return v < m.threshold
+    return val > threshold
 }
 
-// IPWildcardMatcher IP 通配匹配
-type IPWildcardMatcher struct {
-    pattern string
+func (m *GreaterMatcher) Type() string {
+    return "greater"
+}
+```
+
+**LessMatcher** — 小于匹配（`less.go`）
+
+```go
+// internal/engine/matcher/less.go
+
+package matcher
+
+import "strconv"
+
+// LessMatcher 当数值小于阈值时匹配。
+// 模式格式："<10"，Match 时从 pattern 中解析阈值。
+type LessMatcher struct{}
+
+func (m *LessMatcher) Match(pattern string, value string) bool {
+    if len(pattern) < 2 {
+        return false
+    }
+    threshold, err := strconv.ParseInt(pattern[1:], 10, 64)
+    if err != nil {
+        return false
+    }
+    val, err := strconv.ParseInt(value, 10, 64)
+    if err != nil {
+        return false
+    }
+    return val < threshold
 }
 
-func (m *IPWildcardMatcher) Match(value string) bool {
-    parts := strings.Split(m.pattern, ".")
+func (m *LessMatcher) Type() string {
+    return "less"
+}
+```
+
+**IPMatcher** — IP 通配符匹配（`ip.go`）
+
+```go
+// internal/engine/matcher/ip.go
+
+package matcher
+
+import "strings"
+
+// IPMatcher 使用通配符模式匹配 IP 地址。
+// 模式格式："192.168.*.*"，通配符 "*" 可用于任何八位组位置。
+// 注意：代码中不存在 IPRangeMatcher，仅支持通配符匹配。
+type IPMatcher struct{}
+
+func (m *IPMatcher) Match(pattern string, value string) bool {
+    patternParts := strings.Split(pattern, ".")
     valueParts := strings.Split(value, ".")
 
-    if len(parts) != 4 || len(valueParts) != 4 {
+    if len(patternParts) != 4 || len(valueParts) != 4 {
         return false
     }
 
     for i := 0; i < 4; i++ {
-        if parts[i] != "*" && parts[i] != valueParts[i] {
+        if patternParts[i] == "*" {
+            continue
+        }
+        if patternParts[i] != valueParts[i] {
             return false
         }
     }
     return true
 }
 
-// IPRangeMatcher IP 范围匹配
-type IPRangeMatcher struct {
-    startIP, endIP net.IP
-}
-
-func (m *IPRangeMatcher) Match(value string) bool {
-    ip := net.ParseIP(value)
-    if ip == nil {
-        return false
-    }
-    return bytes.Compare(ip, m.startIP) >= 0 && bytes.Compare(ip, m.endIP) <= 0
-}
-
-// DictMatcher 字典匹配
-type DictMatcher struct {
-    dict map[string]struct{}
-}
-
-func (m *DictMatcher) Match(value string) bool {
-    _, ok := m.dict[value]
-    return ok
-}
-
-// ParseMatcher 解析匹配模式
-func ParseMatcher(pattern string, dicts map[string]map[string]struct{}) (Matcher, error) {
-    // 任意值
-    if pattern == "+" {
-        return &AnyMatcher{}, nil
-    }
-
-    // 取反
-    if strings.HasPrefix(pattern, "!") {
-        inner, err := ParseMatcher(pattern[1:], dicts)
-        if err != nil {
-            return nil, err
-        }
-        return &NotMatcher{inner: inner}, nil
-    }
-
-    // 字典引用
-    if strings.HasPrefix(pattern, "@") {
-        dictName := pattern[1:]
-        dict, ok := dicts[dictName]
-        if !ok {
-            return nil, fmt.Errorf("dict not found: %s", dictName)
-        }
-        return &DictMatcher{dict: dict}, nil
-    }
-
-    // 范围匹配
-    if strings.Contains(pattern, "-") && !strings.Contains(pattern, ".") {
-        parts := strings.Split(pattern, "-")
-        if len(parts) == 2 {
-            min, err1 := strconv.ParseInt(parts[0], 10, 64)
-            max, err2 := strconv.ParseInt(parts[1], 10, 64)
-            if err1 == nil && err2 == nil {
-                return &RangeMatcher{min: min, max: max}, nil
-            }
-        }
-    }
-
-    // 大于
-    if strings.HasPrefix(pattern, ">") {
-        threshold, err := strconv.ParseInt(pattern[1:], 10, 64)
-        if err != nil {
-            return nil, err
-        }
-        return &GreaterMatcher{threshold: threshold}, nil
-    }
-
-    // 小于
-    if strings.HasPrefix(pattern, "<") {
-        threshold, err := strconv.ParseInt(pattern[1:], 10, 64)
-        if err != nil {
-            return nil, err
-        }
-        return &LessMatcher{threshold: threshold}, nil
-    }
-
-    // IP 通配
-    if strings.Contains(pattern, "*") {
-        return &IPWildcardMatcher{pattern: pattern}, nil
-    }
-
-    // IP 范围
-    if strings.Count(pattern, ".") == 6 && strings.Contains(pattern, "-") {
-        parts := strings.Split(pattern, "-")
-        if len(parts) == 2 {
-            startIP := net.ParseIP(parts[0])
-            endIP := net.ParseIP(parts[1])
-            if startIP != nil && endIP != nil {
-                return &IPRangeMatcher{startIP: startIP, endIP: endIP}, nil
-            }
-        }
-    }
-
-    // 多值匹配
-    if strings.Contains(pattern, ",") {
-        values := make(map[string]struct{})
-        for _, v := range strings.Split(pattern, ",") {
-            values[strings.TrimSpace(v)] = struct{}{}
-        }
-        return &MultiMatcher{values: values}, nil
-    }
-
-    // 精确匹配
-    return &ExactMatcher{expected: pattern}, nil
+func (m *IPMatcher) Type() string {
+    return "ip"
 }
 ```
+
+**DictMatcher** — 字典匹配（`dict.go`）
+
+```go
+// internal/engine/matcher/dict.go
+
+package matcher
+
+import "sync"
+
+// DictMatcher 根据命名字典匹配值。
+// 模式格式："@dict_name"，当值存在于指定字典中时匹配。
+// 这是唯一有状态的 Matcher：内部持有多个字典 + sync.RWMutex。
+// 通过包级单例 defaultDictMatcher 使用，Parse("@xxx") 返回该单例。
+type DictMatcher struct {
+    mu    sync.RWMutex
+    dicts map[string]map[string]bool  // 字典名 -> {值 -> bool}
+}
+
+func NewDictMatcher() *DictMatcher {
+    return &DictMatcher{
+        dicts: make(map[string]map[string]bool),
+    }
+}
+
+func (m *DictMatcher) Match(pattern string, value string) bool {
+    if len(pattern) < 2 || pattern[0] != '@' {
+        return false
+    }
+    dictName := pattern[1:]
+    if dictName == "" {
+        return false
+    }
+
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+
+    dict, exists := m.dicts[dictName]
+    if !exists {
+        return false
+    }
+    return dict[value]
+}
+
+func (m *DictMatcher) Type() string {
+    return "dict"
+}
+
+// RegisterDict 注册字典，values 的 key 是要匹配的值。
+func (m *DictMatcher) RegisterDict(name string, values map[string]bool) { ... }
+
+// RegisterDictSlice 从切片注册字典。
+func (m *DictMatcher) RegisterDictSlice(name string, values []string) { ... }
+```
+
+> **DictMatcher 设计说明**:
+> - 内部存储为 `map[string]map[string]bool`（多字典），使用 `sync.RWMutex` 保护并发读写。
+> - 包级变量 `defaultDictMatcher = NewDictMatcher()` 作为全局单例。
+> - 包级函数 `RegisterDict()` / `RegisterDictSlice()` 委托给 `defaultDictMatcher` 方法。
+> - `Parse("@xxx")` 返回该单例，不创建新实例。
+
+#### 与 Rule 的集成
+
+`Rule` 结构体同时持有 `Match`（原始模式字符串）和 `Matchers`（预编译的匹配器）：
+
+```go
+// internal/engine/rule.go
+
+type Rule struct {
+    Name      string
+    Type      RuleType
+    Phase     RulePhase
+    Match     map[string]string           // 匹配条件（字段名 -> 模式字符串）
+    Matchers  map[string]matcher.Matcher  // 预编译的匹配器（字段名 -> Matcher）
+    Limit     LimitConfig
+    Algorithm algorithm.Algorithm
+    Result    ResultConfig
+}
+```
+
+> **注意**: `Match` 存储原始配置模式（如 `"+"`, `"!post"`, `"@vip_list"`），
+> `Matchers` 存储由 `matcher.Parse()` 预编译的 Matcher 实例。
+> 匹配时使用 `Matchers[field].Match(Match[field], requestValue)` 调用。
 
 ## 3.7 缓存键生成
 
@@ -730,43 +974,48 @@ koala:{rule_name}:{sorted_params}
 
 示例：
 ```
-koala:daily_comment:act=comment|uid=12345
-koala:api_limit:act=api_call|ip=192.168.1.1|uid=12345
+koala:daily_comment:act=comment:uid=12345
+koala:api_limit:act=api_call:ip=192.168.1.1:uid=12345
 ```
 
 ### 3.7.2 生成规则
 
 1. 参数按键名字母顺序排序
 2. 每个参数格式：`key=value`
-3. 参数间用 `|` 分隔
+3. 参数间用 `:` 分隔
 4. 前缀 `koala:{rule_name}:`
 
 ### 3.7.3 实现代码
 
 ```go
-// internal/engine/cache_key.go
+// internal/engine/rule.go - GenerateKey 方法
 
 package engine
 
 import (
+    "fmt"
     "sort"
-    "strings"
 )
 
-func GenerateCacheKey(ruleName string, params map[string]string, matchKeys []string) string {
-    var parts []string
+// GenerateKey 生成用于限流计数的存储键。
+// 键格式：koala:{ruleName}:{field1}={value1}:{field2}={value2}...
+// 注意：字段按字母顺序排序以确保键的一致性。
+func (r *Rule) GenerateKey(req *Request) string {
+    key := fmt.Sprintf("koala:%s", r.Name)
 
-    // 只使用规则中定义的匹配键
-    for _, key := range matchKeys {
-        if value, ok := params[key]; ok {
-            parts = append(parts, key+"="+value)
-        }
+    // 收集字段名并排序，确保键的顺序一致
+    fields := make([]string, 0, len(r.Match))
+    for field := range r.Match {
+        fields = append(fields, field)
     }
+    sort.Strings(fields)
 
-    // 排序确保一致性
-    sort.Strings(parts)
-
-    return "koala:" + ruleName + ":" + strings.Join(parts, "|")
+    // 按排序后的顺序生成键
+    for _, field := range fields {
+        value := req.GetField(field)
+        key = fmt.Sprintf("%s:%s=%s", key, field, value)
+    }
+    return key
 }
 ```
 

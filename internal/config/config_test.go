@@ -12,6 +12,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -474,4 +475,36 @@ func TestConfigChangeType(t *testing.T) {
 	assert.Equal(t, "rules", ConfigChangeTypeRules.String())
 	assert.Equal(t, "dict", ConfigChangeTypeDict.String())
 	assert.Equal(t, "unknown", ConfigChangeType(99).String())
+}
+
+// TestParseSize_Concurrent 并发调用 ParseSize，验证包级别正则表达式在多 goroutine 下无竞态条件。
+func TestParseSize_Concurrent(t *testing.T) {
+	// 测试用例：覆盖多种合法大小格式
+	inputs := []struct {
+		input    string
+		expected int64
+	}{
+		{"512MB", 512 * 1024 * 1024},
+		{"1GB", 1 * 1024 * 1024 * 1024},
+		{"100KB", 100 * 1024},
+		{"1024", 1024},
+		{"2TB", 2 * 1024 * 1024 * 1024 * 1024},
+	}
+
+	const goroutines = 100
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	// 启动 100 个 goroutine 并发调用 ParseSize
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			tc := inputs[idx%len(inputs)]
+			result, err := ParseSize(tc.input)
+			assert.NoError(t, err, "goroutine %d: ParseSize(%q) 返回错误", idx, tc.input)
+			assert.Equal(t, tc.expected, result, "goroutine %d: ParseSize(%q) 返回值不匹配", idx, tc.input)
+		}(i)
+	}
+
+	wg.Wait()
 }

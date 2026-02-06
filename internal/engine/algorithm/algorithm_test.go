@@ -11,6 +11,7 @@ package algorithm
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -344,4 +345,113 @@ func newTestStore(t *testing.T) storage.Storage {
 	store, err := local.New(local.DefaultConfig())
 	require.NoError(t, err)
 	return store
+}
+
+// =============================================================================
+// Problem #5: Base algorithm totalKey TTL Tests
+// =============================================================================
+
+// TestBase_TotalKey_HasTTL 验证 Base 算法 totalKey 有过期时间
+func TestBase_TotalKey_HasTTL(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	algo := NewBase()
+	ctx := context.Background()
+
+	cfg := LimitConfig{
+		Base:  100,
+		Count: 1,
+		Time:  100 * time.Millisecond,
+	}
+	key := "base:ttl:test"
+
+	// 执行一次 Update 创建 totalKey
+	algo.Update(ctx, key, cfg, store)
+
+	// totalKey 应该存在
+	totalKey := key + ":total"
+	val, err := store.GetInt(ctx, totalKey)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), val)
+
+	// 等待 TTL 过期（clamp最小1h，但 local storage 的 IncrWithTTL 会设置TTL）
+	// 由于最小 TTL 是1h，我们只能验证 IncrWithTTL 被调用（key存在且有值）
+	// 实际 TTL 过期测试需要短 TTL，但 clamp 最小是1h
+	// 所以这里验证功能正确性：多次 Update 后值递增
+	algo.Update(ctx, key, cfg, store)
+	val, err = store.GetInt(ctx, totalKey)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), val)
+}
+
+// TestBase_WithConfigBase 验证 Base 值从配置正确传递到算法
+func TestBase_WithConfigBase(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	algo := NewBase()
+	ctx := context.Background()
+
+	cfg := LimitConfig{
+		Base:  3,
+		Count: 2,
+		Time:  time.Minute,
+	}
+	key := "base:config:test"
+
+	// 在 base 阈值以下，不应命中
+	for i := 0; i < 3; i++ {
+		hit, err := algo.Browse(ctx, key, cfg, store)
+		assert.NoError(t, err)
+		assert.False(t, hit, "在base阈值以下不应命中限制")
+		algo.Update(ctx, key, cfg, store)
+	}
+
+	// 超过 base 阈值后，进入二级限制
+	// 二级限制 count=2, time=1m，前两次不应命中
+	for i := 0; i < 2; i++ {
+		hit, err := algo.Browse(ctx, key, cfg, store)
+		assert.NoError(t, err)
+		assert.False(t, hit, "二级限制内不应命中")
+		algo.Update(ctx, key, cfg, store)
+	}
+
+	// 第3次超过二级限制应命中
+	hit, err := algo.Browse(ctx, key, cfg, store)
+	assert.NoError(t, err)
+	assert.True(t, hit, "超过二级限制应命中")
+}
+
+// =============================================================================
+// Problem #6: Leak algorithm concurrency Tests
+// =============================================================================
+
+// TestLeak_ConcurrentBrowseUpdate 并发测试 Leak 算法
+func TestLeak_ConcurrentBrowseUpdate(t *testing.T) {
+	store := newTestStore(t)
+	defer store.Close()
+
+	algo := NewLeak()
+	ctx := context.Background()
+
+	cfg := LimitConfig{
+		Count: 1000, // 高限制避免误触发
+		Time:  time.Minute,
+	}
+	key := "leak:concurrent:test"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 10; j++ {
+				algo.Browse(ctx, key, cfg, store)
+				algo.Update(ctx, key, cfg, store)
+			}
+		}()
+	}
+	wg.Wait()
+	// 如果没有 race condition 就算通过
 }

@@ -10,6 +10,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -22,6 +23,8 @@ type RouterConfig struct {
 	RequestTimeout time.Duration
 	// 是否启用CORS
 	EnableCORS bool
+	// CORS允许的来源列表
+	CORSAllowOrigins []string
 	// 是否启用指标收集
 	EnableMetrics bool
 	// API限流配置（每秒请求数）
@@ -56,7 +59,9 @@ func NewRouter(handler *Handler, config *RouterConfig) *gin.Engine {
 	router.Use(LoggingMiddleware())
 
 	if config.EnableCORS {
-		router.Use(CORSMiddleware())
+		router.Use(CORSMiddlewareWithConfig(CORSConfig{
+			AllowOrigins: config.CORSAllowOrigins,
+		}))
 	}
 
 	if config.RequestTimeout > 0 {
@@ -174,21 +179,36 @@ func floatToString(f float64) string {
 
 // Server HTTP服务器封装。
 type Server struct {
-	router *gin.Engine
-	addr   string
+	router     *gin.Engine
+	addr       string
+	httpServer *http.Server
 }
 
 // NewServer 创建新的HTTP服务器。
 func NewServer(handler *Handler, addr string, config *RouterConfig) *Server {
+	router := NewRouter(handler, config)
 	return &Server{
-		router: NewRouter(handler, config),
+		router: router,
 		addr:   addr,
+		httpServer: &http.Server{
+			Addr:    addr,
+			Handler: router,
+		},
 	}
 }
 
 // Run 启动HTTP服务器。
 func (s *Server) Run() error {
-	return s.router.Run(s.addr)
+	err := s.httpServer.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// Shutdown 优雅关闭服务器。
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
 }
 
 // Handler 返回底层的HTTP处理器（用于测试）。

@@ -190,81 +190,162 @@ func (m *StorageManager) IsDegraded() bool {
 }
 
 // =============================================================================
-// Storage 接口实现
+// 故障转移辅助方法
 // =============================================================================
 
-func (m *StorageManager) Get(ctx context.Context, key string) (string, error) {
-	val, err := m.getCurrent().Get(ctx, key)
+// executeWithFailover 对只返回 error 的操作执行故障转移。
+// 先尝试当前存储，失败时记录故障并在降级后重试 fallback。
+func (m *StorageManager) executeWithFailover(fn func(s storage.Storage) error) error {
+	err := fn(m.getCurrent())
 	if err != nil && m.primary != nil && !m.degraded.Load() {
 		m.recordFailure()
 		if m.degraded.Load() {
-			return m.fallback.Get(ctx, key)
-		}
-	}
-	return val, err
-}
-
-func (m *StorageManager) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
-	err := m.getCurrent().Set(ctx, key, value, ttl)
-	if err != nil && m.primary != nil && !m.degraded.Load() {
-		m.recordFailure()
-		if m.degraded.Load() {
-			return m.fallback.Set(ctx, key, value, ttl)
+			return fn(m.fallback)
 		}
 	}
 	return err
 }
 
+// executeWithFailoverString 对返回 (string, error) 的操作执行故障转移。
+func (m *StorageManager) executeWithFailoverString(fn func(s storage.Storage) (string, error)) (string, error) {
+	val, err := fn(m.getCurrent())
+	if err != nil && m.primary != nil && !m.degraded.Load() {
+		m.recordFailure()
+		if m.degraded.Load() {
+			return fn(m.fallback)
+		}
+	}
+	return val, err
+}
+
+// executeWithFailoverInt64 对返回 (int64, error) 的操作执行故障转移。
+func (m *StorageManager) executeWithFailoverInt64(fn func(s storage.Storage) (int64, error)) (int64, error) {
+	val, err := fn(m.getCurrent())
+	if err != nil && m.primary != nil && !m.degraded.Load() {
+		m.recordFailure()
+		if m.degraded.Load() {
+			return fn(m.fallback)
+		}
+	}
+	return val, err
+}
+
+// executeWithFailoverBool 对返回 (bool, error) 的操作执行故障转移。
+func (m *StorageManager) executeWithFailoverBool(fn func(s storage.Storage) (bool, error)) (bool, error) {
+	val, err := fn(m.getCurrent())
+	if err != nil && m.primary != nil && !m.degraded.Load() {
+		m.recordFailure()
+		if m.degraded.Load() {
+			return fn(m.fallback)
+		}
+	}
+	return val, err
+}
+
+// executeWithFailoverSlice 对返回 ([]int64, error) 的操作执行故障转移。
+func (m *StorageManager) executeWithFailoverSlice(fn func(s storage.Storage) ([]int64, error)) ([]int64, error) {
+	val, err := fn(m.getCurrent())
+	if err != nil && m.primary != nil && !m.degraded.Load() {
+		m.recordFailure()
+		if m.degraded.Load() {
+			return fn(m.fallback)
+		}
+	}
+	return val, err
+}
+
+// =============================================================================
+// Storage 接口实现
+// =============================================================================
+
+func (m *StorageManager) Get(ctx context.Context, key string) (string, error) {
+	return m.executeWithFailoverString(func(s storage.Storage) (string, error) {
+		return s.Get(ctx, key)
+	})
+}
+
+func (m *StorageManager) Set(ctx context.Context, key string, value string, ttl time.Duration) error {
+	return m.executeWithFailover(func(s storage.Storage) error {
+		return s.Set(ctx, key, value, ttl)
+	})
+}
+
 func (m *StorageManager) Delete(ctx context.Context, key string) error {
-	return m.getCurrent().Delete(ctx, key)
+	return m.executeWithFailover(func(s storage.Storage) error {
+		return s.Delete(ctx, key)
+	})
 }
 
 func (m *StorageManager) Exists(ctx context.Context, key string) (bool, error) {
-	return m.getCurrent().Exists(ctx, key)
+	return m.executeWithFailoverBool(func(s storage.Storage) (bool, error) {
+		return s.Exists(ctx, key)
+	})
 }
 
 func (m *StorageManager) Expire(ctx context.Context, key string, ttl time.Duration) error {
-	return m.getCurrent().Expire(ctx, key, ttl)
+	return m.executeWithFailover(func(s storage.Storage) error {
+		return s.Expire(ctx, key, ttl)
+	})
 }
 
 func (m *StorageManager) GetInt(ctx context.Context, key string) (int64, error) {
-	return m.getCurrent().GetInt(ctx, key)
+	return m.executeWithFailoverInt64(func(s storage.Storage) (int64, error) {
+		return s.GetInt(ctx, key)
+	})
 }
 
 func (m *StorageManager) SetInt(ctx context.Context, key string, value int64, ttl time.Duration) error {
-	return m.getCurrent().SetInt(ctx, key, value, ttl)
+	return m.executeWithFailover(func(s storage.Storage) error {
+		return s.SetInt(ctx, key, value, ttl)
+	})
 }
 
 func (m *StorageManager) Incr(ctx context.Context, key string) (int64, error) {
-	return m.getCurrent().Incr(ctx, key)
+	return m.executeWithFailoverInt64(func(s storage.Storage) (int64, error) {
+		return s.Incr(ctx, key)
+	})
 }
 
 func (m *StorageManager) IncrBy(ctx context.Context, key string, delta int64) (int64, error) {
-	return m.getCurrent().IncrBy(ctx, key, delta)
+	return m.executeWithFailoverInt64(func(s storage.Storage) (int64, error) {
+		return s.IncrBy(ctx, key, delta)
+	})
 }
 
 func (m *StorageManager) IncrWithTTL(ctx context.Context, key string, ttl time.Duration) (int64, error) {
-	return m.getCurrent().IncrWithTTL(ctx, key, ttl)
+	return m.executeWithFailoverInt64(func(s storage.Storage) (int64, error) {
+		return s.IncrWithTTL(ctx, key, ttl)
+	})
 }
 
 func (m *StorageManager) LPush(ctx context.Context, key string, values ...int64) error {
-	return m.getCurrent().LPush(ctx, key, values...)
+	return m.executeWithFailover(func(s storage.Storage) error {
+		return s.LPush(ctx, key, values...)
+	})
 }
 
 func (m *StorageManager) LLen(ctx context.Context, key string) (int64, error) {
-	return m.getCurrent().LLen(ctx, key)
+	return m.executeWithFailoverInt64(func(s storage.Storage) (int64, error) {
+		return s.LLen(ctx, key)
+	})
 }
 
 func (m *StorageManager) LIndex(ctx context.Context, key string, index int64) (int64, error) {
-	return m.getCurrent().LIndex(ctx, key, index)
+	return m.executeWithFailoverInt64(func(s storage.Storage) (int64, error) {
+		return s.LIndex(ctx, key, index)
+	})
 }
 
 func (m *StorageManager) LTrim(ctx context.Context, key string, start, stop int64) error {
-	return m.getCurrent().LTrim(ctx, key, start, stop)
+	return m.executeWithFailover(func(s storage.Storage) error {
+		return s.LTrim(ctx, key, start, stop)
+	})
 }
 
 func (m *StorageManager) LRange(ctx context.Context, key string, start, stop int64) ([]int64, error) {
-	return m.getCurrent().LRange(ctx, key, start, stop)
+	return m.executeWithFailoverSlice(func(s storage.Storage) ([]int64, error) {
+		return s.LRange(ctx, key, start, stop)
+	})
 }
 
 func (m *StorageManager) Ping(ctx context.Context) error {

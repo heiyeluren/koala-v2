@@ -1272,3 +1272,356 @@ func TestEngine_Check_DefaultFallback(t *testing.T) {
 	assert.Equal(t, 4002, resp.Code)
 }
 
+// ===========================================================================
+// 测试字典匹配端到端 (Problem #4)
+// ===========================================================================
+
+func TestEngine_DictMatching_EndToEnd(t *testing.T) {
+	store := newMockStorage()
+	dicts := config.NewDictManager()
+
+	// 创建测试字典
+	testDict := config.NewDict()
+	testDict.Add("vip_user_1")
+	testDict.Add("vip_user_2")
+	dicts.Set("vip_list", testDict)
+
+	// 将字典同步到 matcher
+	SyncDictsToMatcher(dicts)
+
+	eng := New(WithStorage(store), WithDicts(dicts))
+
+	rulesConfig := &config.RulesConfig{
+		Meta: config.Meta{Version: "1.0"},
+		Results: map[string]config.Result{
+			"allow": {Code: 0, Message: "VIP允许", AuthType: 0},
+		},
+		Access: config.AccessRules{
+			Whitelist: []config.AccessRule{
+				{
+					Name:   "vip_whitelist",
+					Match:  map[string]string{"uid": "@vip_list"},
+					Result: "allow",
+				},
+			},
+		},
+	}
+
+	err := eng.LoadRules(rulesConfig)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// VIP 用户应该匹配白名单
+	resp, err := eng.Check(ctx, &Request{Act: "test", UID: "vip_user_1"})
+	require.NoError(t, err)
+	assert.True(t, resp.Allowed)
+	assert.Equal(t, "vip_whitelist", resp.RuleName)
+
+	// 非 VIP 用户不应匹配
+	resp, err = eng.Check(ctx, &Request{Act: "test", UID: "normal_user"})
+	require.NoError(t, err)
+	assert.True(t, resp.Allowed) // 允许（因为没有其他规则拒绝）
+	assert.Equal(t, "", resp.RuleName)
+}
+
+// ===========================================================================
+// 测试 matchRules 方法：Check/Browse 一致性 (Task 3-3)
+// ===========================================================================
+
+// TestEngine_MatchRules_Consistency 验证Check和Browse对相同输入产生一致的允许/拒绝决策。
+// Check使用updateOnMatch=true，Browse使用updateOnMatch=false，但判定结果应相同。
+func TestEngine_MatchRules_Consistency(t *testing.T) {
+	t.Run("白名单匹配一致性", func(t *testing.T) {
+		store := newMockStorage()
+		eng := New(WithStorage(store))
+
+		rulesConfig := &config.RulesConfig{
+			Meta: config.Meta{Version: "1.0"},
+			Results: map[string]config.Result{
+				"allow": {Code: 0, Message: "VIP允许", AuthType: 0},
+			},
+			Access: config.AccessRules{
+				Whitelist: []config.AccessRule{
+					{Name: "vip_whitelist", Match: map[string]string{"uid": "vip_user"}, Result: "allow"},
+				},
+			},
+		}
+		err := eng.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		req := &Request{Act: "test", UID: "vip_user"}
+
+		// Check和Browse应返回相同的允许结果
+		checkResp, err := eng.Check(ctx, req)
+		require.NoError(t, err)
+
+		browseResp, err := eng.Browse(ctx, req)
+		require.NoError(t, err)
+
+		assert.Equal(t, checkResp.Allowed, browseResp.Allowed, "白名单匹配时Check和Browse的Allowed应一致")
+		assert.Equal(t, checkResp.Code, browseResp.Code, "白名单匹配时Check和Browse的Code应一致")
+		assert.Equal(t, checkResp.Message, browseResp.Message, "白名单匹配时Check和Browse的Message应一致")
+		assert.Equal(t, checkResp.RuleName, browseResp.RuleName, "白名单匹配时Check和Browse的RuleName应一致")
+		assert.Equal(t, checkResp.AuthType, browseResp.AuthType, "白名单匹配时Check和Browse的AuthType应一致")
+	})
+
+	t.Run("黑名单匹配一致性", func(t *testing.T) {
+		store := newMockStorage()
+		eng := New(WithStorage(store))
+
+		rulesConfig := &config.RulesConfig{
+			Meta: config.Meta{Version: "1.0"},
+			Results: map[string]config.Result{
+				"deny": {Code: 1001, Message: "IP被禁止", AuthType: 0},
+			},
+			Access: config.AccessRules{
+				Blacklist: []config.AccessRule{
+					{Name: "bad_ip", Match: map[string]string{"ip": "10.0.0.1"}, Result: "deny"},
+				},
+			},
+		}
+		err := eng.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		req := &Request{Act: "test", IP: "10.0.0.1"}
+
+		checkResp, err := eng.Check(ctx, req)
+		require.NoError(t, err)
+
+		browseResp, err := eng.Browse(ctx, req)
+		require.NoError(t, err)
+
+		assert.Equal(t, checkResp.Allowed, browseResp.Allowed, "黑名单匹配时Check和Browse的Allowed应一致")
+		assert.Equal(t, checkResp.Code, browseResp.Code, "黑名单匹配时Check和Browse的Code应一致")
+		assert.Equal(t, checkResp.RuleName, browseResp.RuleName, "黑名单匹配时Check和Browse的RuleName应一致")
+	})
+
+	t.Run("限流规则未触发时一致性", func(t *testing.T) {
+		store := newMockStorage()
+		eng := New(WithStorage(store))
+
+		rulesConfig := &config.RulesConfig{
+			Meta: config.Meta{Version: "1.0"},
+			Results: map[string]config.Result{
+				"rate_limit": {Code: 1002, Message: "请求过于频繁", AuthType: 1},
+			},
+			Rules: config.RateRules{
+				Business: []config.RateRule{
+					{
+						Name:   "login_limit",
+						Type:   config.RuleTypeCount,
+						Match:  map[string]string{"act": "login", "uid": "+"},
+						Limit:  config.Limit{Time: time.Minute, Count: 10},
+						Result: "rate_limit",
+					},
+				},
+			},
+		}
+		err := eng.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		req := &Request{Act: "login", UID: "user_consistency"}
+
+		// 第一次调用时都应该允许
+		checkResp, err := eng.Check(ctx, req)
+		require.NoError(t, err)
+
+		// 使用新的storage重新创建引擎，确保Browse的初始状态一致
+		store2 := newMockStorage()
+		eng2 := New(WithStorage(store2))
+		err = eng2.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		browseResp, err := eng2.Browse(ctx, req)
+		require.NoError(t, err)
+
+		assert.Equal(t, checkResp.Allowed, browseResp.Allowed, "限流规则未触发时Check和Browse的Allowed应一致")
+		assert.True(t, checkResp.Allowed, "限流未触发时应允许")
+		assert.True(t, browseResp.Allowed, "限流未触发时Browse也应允许")
+	})
+
+	t.Run("限流规则触发时一致性", func(t *testing.T) {
+		store := newMockStorage()
+		eng := New(WithStorage(store))
+
+		rulesConfig := &config.RulesConfig{
+			Meta: config.Meta{Version: "1.0"},
+			Results: map[string]config.Result{
+				"rate_limit": {Code: 1002, Message: "请求过于频繁", AuthType: 1},
+			},
+			Rules: config.RateRules{
+				Business: []config.RateRule{
+					{
+						Name:   "login_limit",
+						Type:   config.RuleTypeCount,
+						Match:  map[string]string{"act": "login", "uid": "+"},
+						Limit:  config.Limit{Time: time.Minute, Count: 2},
+						Result: "rate_limit",
+					},
+				},
+			},
+		}
+		err := eng.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		req := &Request{Act: "login", UID: "user_hit_limit"}
+
+		// 先用Check消耗额度，使计数器达到限制
+		for i := 0; i < 2; i++ {
+			_, err := eng.Check(ctx, req)
+			require.NoError(t, err)
+		}
+
+		// 此时Check和Browse都应该报告限流
+		checkResp, err := eng.Check(ctx, req)
+		require.NoError(t, err)
+
+		browseResp, err := eng.Browse(ctx, req)
+		require.NoError(t, err)
+
+		assert.Equal(t, checkResp.Allowed, browseResp.Allowed, "限流规则触发时Check和Browse的Allowed应一致")
+		assert.False(t, checkResp.Allowed, "Check应报告被限流")
+		assert.False(t, browseResp.Allowed, "Browse应报告被限流")
+		assert.Equal(t, checkResp.Code, browseResp.Code, "限流触发时Check和Browse的Code应一致")
+		assert.Equal(t, checkResp.RuleName, browseResp.RuleName, "限流触发时Check和Browse的RuleName应一致")
+	})
+
+	t.Run("无匹配规则时一致性", func(t *testing.T) {
+		eng := New()
+
+		rulesConfig := &config.RulesConfig{
+			Meta: config.Meta{Version: "1.0"},
+			Results: map[string]config.Result{
+				"deny": {Code: 1001, Message: "拒绝"},
+			},
+			Access: config.AccessRules{
+				Blacklist: []config.AccessRule{
+					{Name: "specific_block", Match: map[string]string{"act": "specific"}, Result: "deny"},
+				},
+			},
+		}
+		err := eng.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		req := &Request{Act: "other_action"}
+
+		checkResp, err := eng.Check(ctx, req)
+		require.NoError(t, err)
+
+		browseResp, err := eng.Browse(ctx, req)
+		require.NoError(t, err)
+
+		assert.Equal(t, checkResp.Allowed, browseResp.Allowed, "无匹配规则时Check和Browse的Allowed应一致")
+		assert.True(t, checkResp.Allowed, "无匹配规则时默认允许")
+		assert.True(t, browseResp.Allowed, "无匹配规则时Browse也默认允许")
+	})
+
+	t.Run("Browse不更新计数器而Check更新计数器", func(t *testing.T) {
+		store := newMockStorage()
+		eng := New(WithStorage(store))
+
+		rulesConfig := &config.RulesConfig{
+			Meta: config.Meta{Version: "1.0"},
+			Results: map[string]config.Result{
+				"rate_limit": {Code: 1002, Message: "限流", AuthType: 1},
+			},
+			Rules: config.RateRules{
+				Business: []config.RateRule{
+					{
+						Name:   "counter_test",
+						Type:   config.RuleTypeCount,
+						Match:  map[string]string{"act": "test_counter", "uid": "+"},
+						Limit:  config.Limit{Time: time.Minute, Count: 3},
+						Result: "rate_limit",
+					},
+				},
+			},
+		}
+		err := eng.LoadRules(rulesConfig)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		req := &Request{Act: "test_counter", UID: "user_counter"}
+
+		// Browse调用多次不应影响计数器
+		for i := 0; i < 10; i++ {
+			resp, err := eng.Browse(ctx, req)
+			require.NoError(t, err)
+			assert.True(t, resp.Allowed, "Browse第%d次应允许，因为不更新计数器", i+1)
+		}
+
+		// Check调用会更新计数器
+		for i := 0; i < 3; i++ {
+			resp, err := eng.Check(ctx, req)
+			require.NoError(t, err)
+			assert.True(t, resp.Allowed, "Check第%d次应允许", i+1)
+		}
+
+		// 第4次Check应被限流
+		resp, err := eng.Check(ctx, req)
+		require.NoError(t, err)
+		assert.False(t, resp.Allowed, "Check第4次应被限流")
+
+		// Browse此时也应该显示限流状态
+		resp, err = eng.Browse(ctx, req)
+		require.NoError(t, err)
+		assert.False(t, resp.Allowed, "Browse此时也应显示被限流")
+	})
+}
+
+// ===========================================================================
+// 测试并发 SetStorage + Check 安全 (Problem #9)
+// ===========================================================================
+
+func TestEngine_ConcurrentSetStorage(t *testing.T) {
+	eng := New()
+	store1 := newMockStorage()
+	store2 := newMockStorage()
+
+	rulesConfig := &config.RulesConfig{
+		Meta: config.Meta{Version: "1.0"},
+		Results: map[string]config.Result{
+			"deny": {Code: 1001, Message: "拒绝"},
+		},
+		Access: config.AccessRules{
+			Whitelist: []config.AccessRule{
+				{Name: "test", Match: map[string]string{"uid": "+"}, Result: "deny"},
+			},
+		},
+	}
+	eng.LoadRules(rulesConfig)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+
+	// 并发执行 SetStorage
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if idx%2 == 0 {
+				eng.SetStorage(store1)
+			} else {
+				eng.SetStorage(store2)
+			}
+		}(i)
+	}
+
+	// 并发执行 Check
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			eng.Check(ctx, &Request{UID: "test", Act: "test"})
+		}()
+	}
+
+	wg.Wait()
+}
+

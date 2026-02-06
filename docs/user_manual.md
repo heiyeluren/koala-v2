@@ -100,14 +100,14 @@ kill -15 <PID>
 listen = ":9981"              # 监听地址和端口
 read_timeout = "5s"            # 读取超时
 write_timeout = "5s"           # 写入超时
-shutdown_timeout = "10s"       # 优雅关闭超时
+shutdown_timeout = "10s"       # 优雅关闭超时（代码默认值为30s）
 
 # =============================================================================
 # 规则配置
 # =============================================================================
 [rules]
 file = "conf/rules.toml"       # 规则文件路径
-reload_interval = "60s"        # 热加载间隔，0表示不自动加载
+reload_interval = "60s"        # 热加载间隔（代码默认值为30s；配置为"0s"时会被覆盖为30s，无法禁用热加载）
 
 # =============================================================================
 # 存储配置
@@ -118,7 +118,7 @@ type = "local"                 # 存储类型: local 或 redis
 # 本地存储配置（单机部署推荐）
 [storage.local]
 max_size = "64MB"              # 最大内存
-num_counters = 100000          # 计数器数量
+num_counters = 10000           # 计数器数量
 
 # Redis存储配置（多实例部署推荐）
 [storage.redis]
@@ -133,16 +133,15 @@ write_timeout = "3s"           # 写入超时
 # 降级存储配置（Redis故障时自动切换到本地存储）
 [storage.fallback]
 enabled = true                 # 是否启用降级
-health_check_interval = "5s"   # 健康检查间隔
-failure_threshold = 3          # 连续失败次数阈值
-recovery_interval = "30s"      # 恢复检查间隔
+# 注意：故障转移的具体参数（MaxFailures=3, HealthCheckInterval=5s, RecoveryInterval=10s）
+# 在 main.go 中硬编码，不通过配置文件控制。
 
 # =============================================================================
 # 日志配置
 # =============================================================================
 [logging]
 level = "info"                 # 日志级别: debug, info, warn, error
-format = "json"                # 日志格式: json 或 console
+format = "json"                # 日志格式: json 或 console（代码默认值为 "console"）
 console = true                 # 是否输出到控制台
 
 # 日志文件配置
@@ -171,10 +170,12 @@ path = "/metrics"              # 监控端点路径
 
 ### 3.3 降级存储说明
 
-当使用 Redis 存储时，可以配置 `[storage.fallback]` 实现自动降级：
+当使用 Redis 存储时，可以配置 `[storage.fallback]` 启用自动降级：
 
-- **降级触发**: 当 Redis 连续失败达到 `failure_threshold` 次时，自动切换到本地存储
-- **自动恢复**: 切换后，系统定期（`recovery_interval`）检查 Redis 是否恢复
+- **配置项**: `[storage.fallback]` 仅支持 `enabled` 一个配置字段
+- **降级触发**: 当 Redis 连续失败达到 3 次时，自动切换到本地存储（硬编码于 main.go，MaxFailures=3）
+- **健康检查**: 系统每 5 秒检查一次 Redis 健康状态（硬编码于 main.go，HealthCheckInterval=5s）
+- **自动恢复**: 切换后，系统每 10 秒尝试恢复 Redis 连接（硬编码于 main.go，RecoveryInterval=10s）
 - **数据一致性**: 降级期间的计数数据存储在本地，Redis 恢复后新请求使用 Redis
 
 ### 3.4 日志文件配置说明
@@ -258,6 +259,11 @@ code = 4001
 message = "登录过于频繁，请稍后重试"
 auth_type = 1                  # 1表示需要验证码
 
+[results.login_ip_limit]
+code = 4002
+message = "该IP登录过于频繁"
+auth_type = 2                  # 2表示需要短信验证码
+
 [results.post_limit]
 code = 4101
 message = "发帖数量已达上限"
@@ -266,6 +272,11 @@ auth_type = 1
 [results.comment_limit]
 code = 4102
 message = "评论过于频繁"
+auth_type = 0
+
+[results.api_limit]
+code = 4201
+message = "API调用频率超限"
 auth_type = 0
 
 [results.global_limit]
@@ -292,7 +303,8 @@ name = "internal_ip_whitelist"
 match = { ip = "10.*.*.*" }             # 支持通配符
 result = "internal_allow"
 
-# 内网IP白名单（另一网段）
+# 内网IP白名单（另一网段）— 示例规则，实际 rules.toml 中未配置
+# 如需启用，请手动添加到 conf/rules.toml
 [[access.whitelist]]
 name = "internal_ip_whitelist_192"
 match = { ip = "192.168.1.*" }
@@ -333,7 +345,7 @@ name = "login_ip_rate_limit"
 type = "count"
 match = { act = "login_ip_test", ip = "+" }
 limit = { time = "60s", count = 10 }
-result = "login_limit"
+result = "login_ip_limit"
 
 # ---------- 发帖规则 ----------
 
@@ -352,6 +364,16 @@ type = "count"
 match = { act = "comment", uid = "+" }
 limit = { time = "60s", count = 10 }
 result = "comment_limit"
+
+# ---------- 高级规则（Advanced）----------
+
+# API全局频率限制
+[[rules.advanced]]
+name = "api_global_limit"
+type = "freq"                           # freq=滑动窗口（漏桶算法）
+match = { act = "api_call" }
+limit = { time = "1s", count = 100 }    # 每秒最多100次
+result = "api_limit"
 
 # ---------- 默认规则（优先级最低）----------
 
@@ -408,16 +430,25 @@ test_whitelist_user
     ▼
 ┌─────────────┐
 │  业务规则   │ ──超限──▶ 返回限流
+│ (Business)  │
 └─────────────┘
     │未超限
     ▼
 ┌─────────────┐
 │  发帖规则   │ ──超限──▶ 返回限流
+│   (Post)    │
+└─────────────┘
+    │未超限
+    ▼
+┌─────────────┐
+│  高级规则   │ ──超限──▶ 返回限流
+│ (Advanced)  │
 └─────────────┘
     │未超限
     ▼
 ┌─────────────┐
 │  默认规则   │ ──超限──▶ 返回限流
+│  (Default)  │
 └─────────────┘
     │未超限
     ▼
@@ -448,7 +479,7 @@ test_whitelist_user
 | `ip` | string | | 客户端IP |
 | `did` | string | | 设备ID |
 | `ext` | object | | 扩展字段 |
-| `update` | bool | | Browse时是否自动更新计数器 |
+| `update` | bool | | Browse时是否自动更新计数器（为true且允许通过时，会再调用 Check 执行完整匹配+更新） |
 
 ### 5.3 响应参数说明
 
@@ -457,8 +488,8 @@ test_whitelist_user
 | `allowed` | bool | 是否允许通过 |
 | `code` | int | 结果码，0表示正常 |
 | `message` | string | 结果描述 |
-| `rule_name` | string | 命中的规则名称 |
-| `auth_type` | int | 验证类型，0=无需验证，1=需要验证码 |
+| `rule_name` | string | 命中的规则名称（omitempty，未命中时不返回） |
+| `auth_type` | int | 验证类型，0=无需验证，1=需要验证码（omitempty，为0时不返回） |
 
 ---
 
@@ -485,6 +516,10 @@ curl http://localhost:9981/ready
 ```
 
 **成功响应:**
+
+> 注意：`ReadyResponse` 的 `message` 和 `timestamp` 字段带有 `omitempty` 标签，
+> 当值为空时不会出现在 JSON 响应中。
+
 ```json
 {
   "ready": true,
@@ -767,7 +802,7 @@ curl -X POST http://localhost:9981/api/v1/browse \
 {
   "allowed": false,
   "code": -1,
-  "message": "act is required"
+  "message": "请求参数错误"
 }
 ```
 
@@ -784,7 +819,7 @@ curl -X POST http://localhost:9981/api/v1/browse \
 {
   "allowed": false,
   "code": -1,
-  "message": "invalid request body"
+  "message": "请求参数错误"
 }
 ```
 
@@ -794,13 +829,13 @@ curl -X POST http://localhost:9981/api/v1/browse \
 curl http://localhost:9981/api/v1/browse
 ```
 
-**响应 (HTTP 405):**
-```json
-{
-  "allowed": false,
-  "code": -1,
-  "message": "method not allowed"
-}
+**响应 (HTTP 404):**
+
+> 注意：Gin 默认不启用 `HandleMethodNotAllowed`，因此使用错误的 HTTP 方法（如对 POST 接口发送 GET）
+> 会返回 HTTP 404 Not Found，而非 405 Method Not Allowed。
+
+```
+404 page not found
 ```
 
 ##### 错误4: 批量请求超过限制（最多100条）
@@ -817,7 +852,7 @@ curl -X POST http://localhost:9981/api/v1/batch \
 {
   "allowed": false,
   "code": -1,
-  "message": "too many requests, max 100"
+  "message": "请求数量超过限制（最大100）"
 }
 ```
 
@@ -948,12 +983,15 @@ curl http://localhost:9981/metrics
 
 **A:**
 - `Browse`: 只查询当前限流状态，不增加计数器
-- `Update`: 增加计数器，用于确认用户真正执行了操作
+- `Browse` + `update=true`: 先执行 Browse 查询，如果结果为允许（allowed=true），则再调用引擎的 Check 方法执行一次完整的规则匹配并更新计数器。实际上相当于先查询再更新两步合一。
+- `Update`: 直接调用引擎的 Check 方法，执行完整的规则匹配（包括白名单、黑名单、限流检查），匹配到限流规则且未超限时更新计数器。
 
 **推荐用法:**
 1. 用户请求时先调用 `Browse` 检查是否允许
 2. 如果允许，执行业务逻辑
 3. 业务执行成功后调用 `Update` 更新计数器
+
+> 或者直接使用 `Browse` + `update=true` 简化为一次调用，适用于无需先执行业务逻辑的场景。
 
 ### Q4: 如何实现不同用户不同限制？
 
@@ -972,11 +1010,15 @@ grep "rate_limit" logs/koala.log | grep "allowed\":false"
 
 ### Q7: 服务支持热加载配置吗？
 
-**A:** 支持。配置 `reload_interval` 为非零值即可自动重新加载规则文件。
+**A:** 支持。配置 `reload_interval` 设置热加载检查间隔。代码默认值为 30 秒。
+
+> 注意：由于 `applyDefaults` 会将值为 0 的 `reload_interval` 覆盖为默认的 30s，
+> 因此配置 `"0s"` 无法禁用热加载。热加载始终启用。
+
 ```toml
 [rules]
 file = "conf/rules.toml"
-reload_interval = "60s"  # 每60秒检查一次
+reload_interval = "60s"  # 每60秒检查一次（默认30s）
 ```
 
 ---
@@ -989,13 +1031,15 @@ reload_interval = "60s"  # 每60秒检查一次
 |--------|------|----------|----------|
 | 0 | 正常 | 请求通过 | 允许操作 |
 | -1 | 请求错误 | 参数缺失或格式错误 | 检查请求参数 |
-| 4001 | 登录限流（用户级） | 同一用户登录次数超限 | 等待或验证码 |
-| 4002 | 登录限流（IP级） | 同一IP登录次数超限（需配置 `login_ip_test` 规则） | 更换网络或等待 |
+| -2 | 服务器内部错误 | 引擎处理失败 | 查看服务端日志排查问题 |
+| 4001 | 登录限流（用户级） | 同一用户登录次数超限（规则 `login_rate_limit`，act=login） | 等待或验证码（auth_type=1） |
+| 4002 | 登录限流（IP级） | 同一IP登录测试次数超限（规则 `login_ip_rate_limit`，act=login_ip_test，result=login_ip_limit） | 更换网络或短信验证码（auth_type=2） |
 | 4003 | IP封禁 | IP在黑名单中 | 联系管理员 |
 | 4004 | 设备封禁 | 设备ID在黑名单中 | 联系管理员 |
-| 4101 | 发帖限流 | 发帖次数超限 | 等待 |
-| 4102 | 评论限流 | 等待 |
-| 4999 | 全局限流 | 等待 |
+| 4101 | 发帖限流 | 发帖次数超限（规则 `post_user_limit`） | 等待或验证码（auth_type=1） |
+| 4102 | 评论限流 | 评论过于频繁（规则 `comment_limit`，act=comment） | 等待冷却时间后重试 |
+| 4201 | API调用限流 | API调用频率超限（高级规则 `api_global_limit`，act=api_call） | 降低调用频率 |
+| 4999 | 全局限流 | 未匹配其他规则但触发全局默认限制（规则 `global_default_limit`） | 等待冷却时间后重试 |
 
 ### B. auth_type 说明
 

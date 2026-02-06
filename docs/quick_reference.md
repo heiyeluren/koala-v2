@@ -4,10 +4,10 @@
 
 ```bash
 # 启动
-./koala -config conf/koala.toml
+./bin/koala -config conf/koala.toml
 
 # 后台启动
-nohup ./koala -config conf/koala.toml > logs/koala.log 2>&1 &
+nohup ./bin/koala -config conf/koala.toml > logs/koala.log 2>&1 &
 
 # 停止
 pkill -f koala
@@ -60,6 +60,17 @@ curl -X POST http://localhost:9981/api/v1/batch \
   }'
 ```
 
+Batch 响应示例：
+
+```json
+{
+  "results": [
+    {"id":"1","allowed":true,"code":0,"message":"ok"},
+    {"id":"2","allowed":false,"code":4001,"message":"登录过于频繁，请稍后重试","rule_name":"login_rate_limit","auth_type":1}
+  ]
+}
+```
+
 ## 响应示例
 
 ```json
@@ -72,19 +83,36 @@ curl -X POST http://localhost:9981/api/v1/batch \
 // 黑名单拦截
 {"allowed":false,"code":4003,"message":"IP已被封禁","rule_name":"blocked_ip_blacklist"}
 
-// 限流
-{"allowed":false,"code":4001,"message":"登录过于频繁，请稍后重试","auth_type":1}
+// 限流拒绝
+{"allowed":false,"code":4001,"message":"登录过于频繁，请稍后重试","rule_name":"login_rate_limit","auth_type":1}
 ```
+
+> **注意**：`rule_name` 和 `auth_type` 字段带有 `omitempty`，当值为零值（空字符串或0）时不会出现在 JSON 响应中。
 
 ## 常用错误码
 
-| 码 | 含义 |
-|----|------|
-| 0 | 正常 |
-| 4001 | 登录限流 |
-| 4003 | IP封禁 |
-| 4004 | 设备封禁 |
-| 4999 | 全局限流 |
+### 系统错误码
+
+| 码 | 含义 | 触发场景 |
+|----|------|----------|
+| -1 | 参数错误 | 请求参数绑定失败或校验不通过 |
+| -2 | 内部错误 | 引擎处理异常 |
+| -500 | panic恢复 | 服务器发生未捕获的异常 |
+| 429 | API限流 | API自身限流中间件拦截 |
+
+### 业务错误码
+
+| 码 | 含义 | 对应规则 |
+|----|------|----------|
+| 0 | 正常通过 | — |
+| 4001 | 登录限流 | login_rate_limit |
+| 4002 | IP登录限流 | login_ip_rate_limit |
+| 4003 | IP封禁 | blocked_ip_blacklist |
+| 4004 | 设备封禁 | blocked_device_blacklist |
+| 4101 | 发帖限流 | post_user_limit |
+| 4102 | 评论限流 | comment_limit |
+| 4201 | API调用限流 | api_global_limit |
+| 4999 | 全局默认限流 | global_default_limit |
 
 ## 日志查看
 

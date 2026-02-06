@@ -1,0 +1,39 @@
+# Koala Redis 模式测试配置
+
+[server]
+listen = ":9981"
+read_timeout = "5s"
+write_timeout = "5s"
+shutdown_timeout = "10s"
+
+[rules]
+file = "conf/rules.toml"
+reload_interval = "0s"
+
+[storage]
+type = "redis"
+
+[storage.redis]
+addr = "localhost:6379"
+password = ""
+db = 0
+pool_size = 10
+dial_timeout = "3s"
+read_timeout = "3s"
+write_timeout = "3s"
+
+[storage.local]
+max_size = "64MB"
+num_counters = 10000
+
+[storage.fallback]
+enabled = true
+
+[logging]
+level = "info"
+format = "json"
+console = true
+
+[metrics]
+enabled = true
+path = "/metrics"
